@@ -1,0 +1,39 @@
+# VPS-Betrieb: weclapp-mcp hinter Caddy (automatisches HTTPS über Let's Encrypt).
+# Voraussetzung: DNS-Eintrag MCP_DOMAIN zeigt auf den VPS, Ports 80 und 443 sind offen.
+#   cp .env.example .env   # Werte eintragen
+#   docker compose up -d --build
+
+services:
+  weclapp-mcp:
+    build: .
+    restart: unless-stopped
+    environment:
+      WECLAPP_TENANT: ${WECLAPP_TENANT:?WECLAPP_TENANT in .env setzen}
+      WECLAPP_READ_ONLY: ${WECLAPP_READ_ONLY:-false}
+      MCP_ALLOWED_HOSTS: ${MCP_DOMAIN:?MCP_DOMAIN in .env setzen}
+    # kein Port nach außen: nur Caddy spricht mit dem Container
+    expose:
+      - "3000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - weclapp-mcp
+    environment:
+      MCP_DOMAIN: ${MCP_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

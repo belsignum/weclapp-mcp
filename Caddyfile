@@ -1,0 +1,18 @@
+{$MCP_DOMAIN} {
+	encode zstd gzip
+
+	# Nur der MCP-Endpunkt und der Healthcheck werden durchgereicht
+	@mcp path /mcp /health
+	handle @mcp {
+		reverse_proxy weclapp-mcp:3000 {
+			# SSE-Antworten sofort weiterreichen
+			flush_interval -1
+		}
+	}
+	handle {
+		respond 404
+	}
+
+	# Kein Access-Log: der Authorization-Header enthält den weclapp-Token.
+	# (Caddy schreibt ohne "log"-Direktive keine Zugriffe mit.)
+}

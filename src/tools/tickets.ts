@@ -1,0 +1,251 @@
+import * as z from 'zod';
+import type { Entity } from '../weclapp/client.ts';
+import { compact, contains, toEpochMs } from '../weclapp/format.ts';
+import {
+  CREATE,
+  READ,
+  UPDATE,
+  allFieldsArg,
+  dryRunArg,
+  fieldsArg,
+  filterArg,
+  idArg,
+  pagingArgs,
+  run,
+  search,
+  sortArg,
+  toWeclappBody,
+  versionArg,
+  type ToolContext,
+} from './common.ts';
+
+const TICKET_FIELDS =
+  'id,ticketNumber,subject,ticketStatusId,ticketPriorityId,ticketTypeId,ticketCategoryId,partyId,contactId,contractId,assignedUserId,responsibleUserId,billable,createdDate,lastModifiedDate,solutionDueDate,followUpDate,tags';
+const TIME_RECORD_FIELDS = 'id,userId,startDate,durationSeconds,billableDurationSeconds,billable,description,ticketId,customerId,articleId,projectId,taskId,billableInvoiceStatus';
+const CLOSED_INTERNAL_STATUS = new Set(['CLOSED', 'FIXED']);
+
+export function registerTicketTools({ server, client, readOnly }: ToolContext): void {
+  /** IDs aller Ticketstatus, die nicht als erledigt/geschlossen gelten. */
+  async function openStatusIds(): Promise<string[]> {
+    const statuses = await client.list<Entity>('ticketStatus', { pageSize: 200, properties: 'id,internalTicketStatus' });
+    return statuses.result.filter((s) => !CLOSED_INTERNAL_STATUS.has(String(s.internalTicketStatus))).map((s) => s.id);
+  }
+
+  server.registerTool(
+    'weclapp_search_tickets',
+    {
+      title: 'Helpdesk-Tickets suchen',
+      description:
+        'Sucht Helpdesk-Tickets und liefert eine kompakte Übersicht. IDs für Status, Typ, Kategorie und Nutzer über weclapp_lookup auflösen. Für Beschreibung, Kommentare und Zeiten weclapp_get_ticket verwenden.',
+      inputSchema: z.object({
+        query: z.string().optional().describe('Suchbegriff im Betreff (Teilstring).'),
+        ticketNumber: z.string().optional().describe('Exakte Ticketnummer.'),
+        openOnly: z.boolean().optional().describe('true = nur offene Tickets (Status nicht erledigt/geschlossen).'),
+        ticketStatusId: z.string().optional().describe('Ticketstatus (weclapp_lookup resource=ticketStatus).'),
+        assignedToMe: z.boolean().optional().describe('true = nur Tickets, die dem Token-Nutzer zugewiesen sind.'),
+        assignedUserId: z.string().optional().describe('Zugewiesener Nutzer (weclapp_lookup resource=user).'),
+        partyId: z.string().optional().describe('Kunde (weclapp_search_parties).'),
+        contractId: z.string().optional().describe('Vertrag (weclapp_search_contracts).'),
+        filter: filterArg,
+        sort: sortArg,
+        ...pagingArgs,
+        allFields: allFieldsArg,
+      }),
+      annotations: READ,
+    },
+    (input) => run(async () => {
+      const assignedUserId = input.assignedToMe ? (await client.currentUser()).id : input.assignedUserId;
+      const openIds = input.openOnly && !input.ticketStatusId ? await openStatusIds() : [];
+      const statusIn = openIds.length ? `[${openIds.join(',')}]` : undefined;
+      return search(client, 'ticket', input, {
+        compactFields: TICKET_FIELDS,
+        defaultSort: '-lastModifiedDate',
+        filters: compact({
+          'subject-ilike': input.query ? contains(input.query) : undefined,
+          'ticketNumber-eq': input.ticketNumber,
+          'ticketStatusId-eq': input.ticketStatusId,
+          'ticketStatusId-in': statusIn,
+          'assignedUserId-eq': assignedUserId,
+          'partyId-eq': input.partyId,
+          'contractId-eq': input.contractId,
+        }),
+      });
+    }),
+  );
+
+  server.registerTool(
+    'weclapp_get_ticket',
+    {
+      title: 'Helpdesk-Ticket lesen',
+      description: 'Liest ein Ticket mit allen Feldern (inkl. "version" für Änderungen), auf Wunsch mit seinen Kommentaren und den darauf gebuchten Zeiten.',
+      inputSchema: z.object({
+        id: idArg,
+        includeComments: z.boolean().default(true).describe('Kommentare mitliefern (Standard: ja).'),
+        includeTimeRecords: z.boolean().default(true).describe('Gebuchte Zeiten mitliefern (Standard: ja).'),
+      }),
+      annotations: READ,
+    },
+    ({ id, includeComments, includeTimeRecords }) => run(async () => {
+      const [ticket, comments, timeRecords] = await Promise.all([
+        client.get('ticket', id),
+        includeComments
+          ? client.list('comment', { pageSize: 200, sort: 'createdDate', extra: { entityName: 'ticket', entityId: id } }).then((r) => r.result)
+          : undefined,
+        includeTimeRecords
+          ? client.list('timeRecord', { pageSize: 200, sort: 'startDate', properties: TIME_RECORD_FIELDS, filters: { 'ticketId-eq': id } }).then((r) => r.result)
+          : undefined,
+      ]);
+      const totalSeconds = timeRecords?.reduce((sum, t) => sum + (Number(t.durationSeconds) || 0), 0);
+      return {
+        ticket,
+        ...(comments ? { comments } : {}),
+        ...(timeRecords ? { timeRecords, totalBookedMinutes: Math.round((totalSeconds ?? 0) / 60) } : {}),
+      };
+    }),
+  );
+
+  server.registerTool(
+    'weclapp_list_time_records',
+    {
+      title: 'Zeitbuchungen lesen',
+      description: 'Listet Zeitbuchungen (Zeiterfassung), z. B. zu einem Ticket, für einen Nutzer oder in einem Zeitraum. Dauer in Sekunden.',
+      inputSchema: z.object({
+        ticketId: z.string().optional(),
+        mine: z.boolean().optional().describe('true = nur Buchungen des Token-Nutzers.'),
+        userId: z.string().optional().describe('Nutzer (weclapp_lookup resource=user).'),
+        customerId: z.string().optional().describe('Kunde (partyId).'),
+        from: z.string().optional().describe('Beginn ab (ISO-8601).'),
+        to: z.string().optional().describe('Beginn vor (ISO-8601, exklusiv).'),
+        filter: filterArg,
+        sort: sortArg,
+        ...pagingArgs,
+        allFields: allFieldsArg,
+      }),
+      annotations: READ,
+    },
+    (input) => run(async () => {
+      const userId = input.mine ? (await client.currentUser()).id : input.userId;
+      return search(client, 'timeRecord', input, {
+        compactFields: TIME_RECORD_FIELDS,
+        defaultSort: '-startDate',
+        filters: compact({
+          'ticketId-eq': input.ticketId,
+          'userId-eq': userId,
+          'customerId-eq': input.customerId,
+          'startDate-ge': input.from ? toEpochMs(input.from, 'from') : undefined,
+          'startDate-lt': input.to ? toEpochMs(input.to, 'to') : undefined,
+        }),
+      });
+    }),
+  );
+
+  if (readOnly) return;
+
+  server.registerTool(
+    'weclapp_update_ticket',
+    {
+      title: 'Helpdesk-Ticket ändern',
+      description:
+        'Ändert Felder eines Tickets: Status (ticketStatusId), Zuweisung (assignedUserId), Verantwortlicher (responsibleUserId), Priorität (ticketPriorityId), Typ, Kategorie, Betreff, Fälligkeit (solutionDueDate), Wiedervorlage (followUpDate), Tags oder Notiz. ' +
+        'IDs über weclapp_lookup auflösen. Die Änderung vorher mit dem Nutzer bestätigen.',
+      inputSchema: z.object({
+        id: idArg,
+        fields: fieldsArg('{"ticketStatusId": "4711", "assignedUserId": "123", "followUpDate": "2026-11-20"}'),
+        version: versionArg,
+        dryRun: dryRunArg,
+      }),
+      annotations: UPDATE,
+    },
+    ({ id, fields, version, dryRun }) => run(() => client.update('ticket', id, toWeclappBody(fields), { version, dryRun })),
+  );
+
+  server.registerTool(
+    'weclapp_add_ticket_comment',
+    {
+      title: 'Kommentar zum Ticket',
+      description:
+        'Schreibt einen Kommentar an ein Ticket. "internal" ist nur intern sichtbar, "public" ist auch für den Kunden sichtbar (z. B. im Kundenportal). Text vorher mit dem Nutzer abstimmen, besonders bei "public".',
+      inputSchema: z.object({
+        ticketId: idArg,
+        text: z.string().min(1).describe('Kommentartext.'),
+        visibility: z.enum(['internal', 'public']).default('internal'),
+        html: z.boolean().optional().describe('true = text ist HTML.'),
+        solution: z.boolean().optional().describe('true = als Lösung des Tickets markieren.'),
+        parentCommentId: z.string().optional().describe('Antwort auf diesen Kommentar.'),
+        dryRun: dryRunArg,
+      }),
+      annotations: CREATE,
+    },
+    ({ ticketId, text, visibility, html, solution, parentCommentId, dryRun }) => run(() =>
+      client.create(
+        'comment',
+        toWeclappBody({
+          entityName: 'ticket',
+          entityId: ticketId,
+          ...(html ? { htmlComment: text } : { comment: text }),
+          // weclapp verlangt, dass genau eines der beiden Flags gesetzt ist
+          privateComment: visibility === 'internal',
+          publicComment: visibility === 'public',
+          solution: solution ?? false,
+          parentCommentId,
+        }),
+        dryRun,
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'weclapp_book_time',
+    {
+      title: 'Zeit auf Ticket buchen',
+      description:
+        'Bucht Arbeitszeit auf ein Ticket. Ohne userId wird auf den Nutzer des Tokens gebucht. Ohne start gilt: Arbeit endet jetzt. Nutzer, Datum, Dauer und Beschreibung vorher bestätigen lassen.',
+      inputSchema: z.object({
+        ticketId: idArg,
+        minutes: z.number().int().min(1).max(24 * 60).describe('Gearbeitete Minuten.'),
+        description: z.string().min(1).describe('Was gemacht wurde.'),
+        start: z.string().optional().describe('Beginn der Arbeit (ISO-8601, z. B. 2026-11-12T09:00:00+01:00). Standard: jetzt minus Dauer.'),
+        billableMinutes: z.number().int().min(0).optional().describe('Abrechenbare Minuten; Standard = minutes, 0 = nicht abrechenbar.'),
+        userId: z.string().optional().describe('Nutzer, für den gebucht wird (weclapp_lookup resource=user). Standard: Token-Nutzer.'),
+        articleId: z.string().optional().describe('Dienstleistungsartikel, der den Stundensatz bestimmt.'),
+        fields: z.record(z.string(), z.unknown()).optional().describe('Weitere Felder der Zeitbuchung, z. B. {"placeOfServiceId": "12", "printOnPerformanceRecord": true}.'),
+        dryRun: dryRunArg,
+      }),
+      annotations: CREATE,
+    },
+    ({ ticketId, minutes, description, start, billableMinutes, userId, articleId, fields, dryRun }) => run(async () => {
+      const user = userId ?? (await client.currentUser()).id;
+      const startDate = start ? toEpochMs(start, 'start') : Date.now() - minutes * 60_000;
+      return client.create(
+        'timeRecord',
+        toWeclappBody({
+          ...fields,
+          ticketId,
+          userId: user,
+          startDate,
+          durationSeconds: minutes * 60,
+          billableDurationSeconds: (billableMinutes ?? minutes) * 60,
+          description,
+          articleId,
+        }),
+        dryRun,
+      );
+    }),
+  );
+
+  server.registerTool(
+    'weclapp_update_time_record',
+    {
+      title: 'Zeitbuchung korrigieren',
+      description: 'Korrigiert eine Zeitbuchung, z. B. Dauer (durationSeconds, billableDurationSeconds), Beginn (startDate) oder Beschreibung. Bereits abgerechnete Zeiten lehnt weclapp ggf. ab.',
+      inputSchema: z.object({
+        id: idArg,
+        fields: fieldsArg('{"durationSeconds": 2700, "billableDurationSeconds": 2700, "description": "..."}'),
+        version: versionArg,
+        dryRun: dryRunArg,
+      }),
+      annotations: UPDATE,
+    },
+    ({ id, fields, version, dryRun }) => run(() => client.update('timeRecord', id, toWeclappBody(fields), { version, dryRun })),
+  );
+}
