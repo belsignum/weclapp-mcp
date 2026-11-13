@@ -1,34 +1,10 @@
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
-import type { AddressInfo } from 'node:net';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { createHttpServer } from '../src/http.ts';
+import type { Client } from '@modelcontextprotocol/client';
+import { connect, json, startMcp, text } from './helpers.ts';
 import { startMockWeclapp } from './mock-weclapp.ts';
 
 type Mock = Awaited<ReturnType<typeof startMockWeclapp>>;
-
-async function startMcp(baseUrl: string, readOnly = false) {
-  const { server, close } = createHttpServer({ config: { baseUrl, readOnly }, allowedHosts: [], log: () => {} });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  return { url: `http://127.0.0.1:${port}`, close };
-}
-
-async function connect(url: string, token: string) {
-  const client = new Client({ name: 'test', version: '1.0.0' });
-  await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }));
-  return client;
-}
-
-function text(result: Awaited<ReturnType<Client['callTool']>>): string {
-  const first = (result.content as Array<{ type: string; text?: string }>)[0];
-  return first?.text ?? '';
-}
-
-function json(result: Awaited<ReturnType<Client['callTool']>>): any {
-  assert.ok(!result.isError, `Tool-Fehler: ${text(result)}`);
-  return JSON.parse(text(result));
-}
 
 describe('HTTP-Server mit Bearer-Weitergabe', () => {
   let mock: Mock;
@@ -37,7 +13,7 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
 
   before(async () => {
     mock = await startMockWeclapp();
-    mcp = await startMcp(mock.baseUrl);
+    mcp = await startMcp(mock.baseUrl, { allowPublicComments: true });
     anna = await connect(mcp.url, 'token-anna');
   });
 
@@ -60,7 +36,7 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
   test('Healthcheck braucht keinen Token', async () => {
     const response = await fetch(`${mcp.url}/health`);
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).status, 'ok');
+    assert.deepEqual(await response.json(), { status: 'ok' });
   });
 
   test('fremder Host-Header wird abgelehnt (DNS-Rebinding-Schutz)', async () => {
@@ -77,11 +53,11 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(status, 403);
   });
 
-  test('listet alle 19 Tools', async () => {
+  test('listet alle 21 Tools', async () => {
     const { tools } = await anna.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.equal(names.length, 19, names.join(', '));
-    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract']) {
+    assert.equal(names.length, 21, names.join(', '));
+    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
       assert.ok(names.includes(name), `${name} fehlt`);
     }
     const update = tools.find((t) => t.name === 'weclapp_update_ticket');
@@ -92,24 +68,19 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
   test('reicht den Token des jeweiligen Requests an weclapp weiter', async () => {
     const ben = await connect(mcp.url, 'token-ben');
     try {
-      mock.requests.length = 0;
       assert.equal(json(await anna.callTool({ name: 'weclapp_whoami', arguments: {} })).firstName, 'Anna');
       assert.equal(json(await ben.callTool({ name: 'weclapp_whoami', arguments: {} })).firstName, 'Ben');
-      assert.deepEqual(mock.requests.map((r) => r.token), ['token-anna', 'token-ben']);
+      mock.requests.length = 0;
+      await anna.callTool({ name: 'weclapp_get_article', arguments: { id: '1' } });
+      await ben.callTool({ name: 'weclapp_get_article', arguments: { id: '1' } });
+      assert.deepEqual(mock.requests.map((r) => `${r.token} ${r.path}`), ['token-anna /article/id/1', 'token-ben /article/id/1']);
     } finally {
       await ben.close();
     }
   });
 
-  test('ungültiger Token liefert eine verständliche Fehlermeldung', async () => {
-    const eve = await connect(mcp.url, 'falsch');
-    try {
-      const result = await eve.callTool({ name: 'weclapp_whoami', arguments: {} });
-      assert.equal(result.isError, true);
-      assert.match(text(result), /API-Token abgelehnt \(401\)/);
-    } finally {
-      await eve.close();
-    }
+  test('ungültiger Token wird schon am Eingang mit 401 abgewiesen', async () => {
+    await assert.rejects(connect(mcp.url, 'falscher-token'), /401|Unauthorized|erforderlich/i);
   });
 
   test('Artikelsuche: ODER-Suche, kompakte Felder, ISO-Datum', async () => {
@@ -126,8 +97,9 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
 
   test('Artikel anlegen: Standard-Steuersatz wird gesetzt', async () => {
     const created = json(await anna.callTool({ name: 'weclapp_create_article', arguments: { articleNumber: 'A-2000', name: 'Neu', articleType: 'BASIC', unitId: '8' } }));
-    assert.equal(created.id, '999');
-    assert.equal(created.taxRateType, 'STANDARD');
+    assert.match(created.changeId, /^[0-9a-f-]{36}$/);
+    assert.equal(created.result.id, '1000');
+    assert.equal(created.result.taxRateType, 'STANDARD');
   });
 
   test('Artikel ändern: PUT mit ignoreMissingProperties, version und dryRun', async () => {
@@ -138,7 +110,10 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(put?.query.ignoreMissingProperties, 'true');
     assert.equal(put?.query.dryRun, 'true');
     assert.deepEqual(put?.body, { name: 'Wartung (neu)', version: '3' });
-    assert.equal(updated.name, 'Wartung (neu)');
+    assert.equal(updated.dryRun, true);
+    assert.equal(updated.changeId, undefined, 'dryRun wird nicht protokolliert');
+    assert.equal(updated.result.name, 'Wartung (neu)');
+    assert.equal(mock.data.article[0].name, 'Wartungsstunde', 'dryRun ändert nichts');
   });
 
   test('veraltete version führt zu einem Konfliktfehler', async () => {
@@ -203,10 +178,11 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
 
   test('Vertrag ändern: ISO-Datum in fields wird zu Epoch-ms', async () => {
     mock.requests.length = 0;
-    json(await anna.callTool({ name: 'weclapp_update_contract', arguments: { id: '60', fields: { endDate: '2026-12-31', contractItems: [{ id: '1', servicePeriodToDate: '2026-12-31T00:00:00Z' }] } } }));
+    json(await anna.callTool({ name: 'weclapp_update_contract', arguments: { id: '60', fields: { endDate: '2026-12-31', contractItems: [{ id: '601', servicePeriodToDate: '2026-12-31T00:00:00Z' }] } } }));
     const body = mock.requests.find((r) => r.method === 'PUT')!.body as any;
     assert.equal(body.endDate, Date.parse('2026-12-31'));
     assert.equal(body.contractItems[0].servicePeriodToDate, Date.parse('2026-12-31T00:00:00Z'));
+    assert.equal(body.version, '2', 'schreibt mit der zuvor gelesenen Version');
   });
 
   test('ungültige Filter werden abgelehnt, bevor weclapp gefragt wird', async () => {
@@ -224,18 +200,29 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
 });
 
 describe('Nur-Lesen-Modus', () => {
-  test('bietet keine Schreib-Tools an', async () => {
+  async function toolNames(options: Parameters<typeof startMcp>[1]) {
     const mock = await startMockWeclapp();
-    const mcp = await startMcp(mock.baseUrl, true);
+    const mcp = await startMcp(mock.baseUrl, options);
     const client = await connect(mcp.url, 'token-anna');
     try {
-      const { tools } = await client.listTools();
-      assert.equal(tools.length, 12);
-      assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
+      return (await client.listTools()).tools;
     } finally {
       await client.close();
       await mcp.close();
       await mock.close();
     }
+  }
+
+  test('ohne Änderungsprotokoll gibt es keine Schreib-Tools', async () => {
+    const tools = await toolNames({ withAudit: false });
+    assert.equal(tools.length, 12);
+    assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
+  });
+
+  test('readOnly mit Protokoll: nur lesen, Protokoll bleibt einsehbar', async () => {
+    const tools = await toolNames({ readOnly: true });
+    assert.equal(tools.length, 13);
+    assert.ok(tools.some((t) => t.name === 'weclapp_list_changes'));
+    assert.ok(!tools.some((t) => t.name === 'weclapp_undo_change'));
   });
 });

@@ -45,6 +45,19 @@ export class WeclappError extends Error {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
+/** weclapp-IDs sind numerische Strings. Alles andere könnte den URL-Pfad verändern ("..", "/"). */
+export const ID_PATTERN = /^[0-9]{1,24}$/;
+const ENTITY_PATTERN = /^[a-z][A-Za-z]{1,60}$/;
+/** Zeichen, die in einem API-Token vorkommen dürfen (weclapp-Tokens sind UUIDs). */
+export const TOKEN_PATTERN = /^[A-Za-z0-9._~+/=-]{8,512}$/;
+
+function entityPath(entity: string, id?: string): string {
+  if (!ENTITY_PATTERN.test(entity)) throw new Error(`Ungültiger weclapp-Datentyp "${entity}".`);
+  if (id === undefined) return `/${entity}`;
+  if (!ID_PATTERN.test(id)) throw new Error(`Ungültige weclapp-ID "${id.slice(0, 40)}": erwartet wird eine Zahl.`);
+  return `/${entity}/id/${id}`;
+}
+
 function describeProblem(status: number, problem: ApiProblem | undefined, fallback: string): string {
   if (status === 401) {
     return 'weclapp hat den API-Token abgelehnt (401). Ist der Token gültig und gehört er zu diesem Mandanten?';
@@ -81,16 +94,22 @@ export class WeclappClient {
   readonly #timeoutMs: number;
   #currentUser: Promise<Entity> | undefined;
 
-  constructor(baseUrl: string, token: string, options: { fetch?: typeof fetch; timeoutMs?: number } = {}) {
+  constructor(baseUrl: string, token: string, options: { fetch?: typeof fetch; timeoutMs?: number; currentUser?: Entity } = {}) {
     if (!token) throw new Error('Kein weclapp-API-Token angegeben.');
+    if (!TOKEN_PATTERN.test(token)) throw new Error('Der weclapp-API-Token enthält unzulässige Zeichen.');
     this.baseUrl = baseUrl.replace(/\/+$/, '');
     this.#token = token;
     this.#fetch = options.fetch ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    if (options.currentUser) this.#currentUser = Promise.resolve(options.currentUser);
   }
 
   async request<T>(method: string, path: string, options: { query?: Query; body?: unknown } = {}): Promise<T> {
     const url = new URL(this.baseUrl + path);
+    // Schutz gegen Pfad-Manipulation: die fertige URL muss unterhalb der Basis-URL bleiben
+    if (url.origin !== new URL(this.baseUrl).origin || !url.pathname.startsWith(new URL(this.baseUrl).pathname + '/') || url.pathname.endsWith('/')) {
+      throw new Error(`Ungültiger weclapp-Pfad "${path.slice(0, 80)}".`);
+    }
     for (const [key, value] of Object.entries(options.query ?? {})) {
       if (value !== undefined && value !== '') url.searchParams.set(key, String(value));
     }
@@ -111,6 +130,8 @@ export class WeclappClient {
         method,
         headers,
         body,
+        // Weiterleitungen nie folgen: der Token-Header würde sonst an das Ziel mitgeschickt
+        redirect: 'error',
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
     } catch (error) {
@@ -132,36 +153,41 @@ export class WeclappClient {
     return JSON.parse(text) as T;
   }
 
-  list<T = Entity>(entity: string, options: ListOptions = {}): Promise<ListResult<T>> {
-    return this.request<ListResult<T>>('GET', `/${entity}`, {
+  async list<T = Entity>(entity: string, options: ListOptions = {}): Promise<ListResult<T>> {
+    return this.request<ListResult<T>>('GET', entityPath(entity), {
       query: {
+        ...options.extra,
+        ...options.filters,
         page: options.page,
         pageSize: options.pageSize,
         sort: options.sort,
         properties: options.properties,
-        ...options.extra,
-        ...options.filters,
       },
     });
   }
 
-  get<T = Entity>(entity: string, id: string): Promise<T> {
-    return this.request<T>('GET', `/${entity}/id/${encodeURIComponent(id)}`);
+  async get<T = Entity>(entity: string, id: string): Promise<T> {
+    return this.request<T>('GET', entityPath(entity, id));
   }
 
-  create<T = Entity>(entity: string, body: Record<string, unknown>, dryRun = false): Promise<T> {
-    return this.request<T>('POST', `/${entity}`, { query: { dryRun: dryRun || undefined }, body });
+  async create<T = Entity>(entity: string, body: Record<string, unknown>, dryRun = false): Promise<T> {
+    return this.request<T>('POST', entityPath(entity), { query: { dryRun: dryRun || undefined }, body });
   }
 
   /**
    * Teil-Update: nur die übergebenen Felder werden geändert.
    * Mit `version` lehnt weclapp die Änderung ab, wenn der Datensatz inzwischen geändert wurde.
    */
-  update<T = Entity>(entity: string, id: string, fields: Record<string, unknown>, options: { version?: string; dryRun?: boolean } = {}): Promise<T> {
-    return this.request<T>('PUT', `/${entity}/id/${encodeURIComponent(id)}`, {
+  async update<T = Entity>(entity: string, id: string, fields: Record<string, unknown>, options: { version?: string; dryRun?: boolean } = {}): Promise<T> {
+    return this.request<T>('PUT', entityPath(entity, id), {
       query: { ignoreMissingProperties: true, dryRun: options.dryRun || undefined },
       body: { ...fields, ...(options.version ? { version: options.version } : {}) },
     });
+  }
+
+  /** Löscht einen Datensatz. Wird nur intern zum Rückgängigmachen einer Anlage verwendet. */
+  async delete(entity: string, id: string): Promise<void> {
+    return this.request<void>('DELETE', entityPath(entity, id));
   }
 
   /** Der weclapp-Nutzer, dem der Token gehört (pro Client-Instanz gecacht). */

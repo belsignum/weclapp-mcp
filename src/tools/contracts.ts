@@ -1,11 +1,12 @@
 import * as z from 'zod';
 import { compact, contains } from '../weclapp/format.ts';
-import { READ, UPDATE, allFieldsArg, dryRunArg, fieldsArg, filterArg, idArg, pagingArgs, run, search, sortArg, toWeclappBody, versionArg, type ToolContext } from './common.ts';
+import { READ, UPDATE, allFieldsArg, auditedUpdate, dryRunArg, fieldsArg, filterArg, idArg, pagingArgs, refArg, run, search, sortArg, versionArg, type ToolContext } from './common.ts';
 
 const CONTRACT_STATUS = ['ACTIVE', 'DRAFT', 'INACTIVE'] as const;
 const COMPACT_FIELDS = 'id,contractNumber,name,partyId,contractStatus,contractDate,startDate,endDate,unlimited,billingType,nextContractBillingDate,cancellationDate,responsibleUserId';
 
-export function registerContractTools({ server, client, readOnly }: ToolContext): void {
+export function registerContractTools(ctx: ToolContext): void {
+  const { server, client, readOnly } = ctx;
   server.registerTool(
     'weclapp_search_contracts',
     {
@@ -14,7 +15,7 @@ export function registerContractTools({ server, client, readOnly }: ToolContext)
       inputSchema: z.object({
         query: z.string().optional().describe('Suchbegriff in Vertragsname oder -nummer (Teilstring).'),
         contractNumber: z.string().optional().describe('Exakte Vertragsnummer.'),
-        partyId: z.string().optional().describe('Kunde (weclapp_search_parties).'),
+        partyId: refArg('Kunde (weclapp_search_parties).'),
         contractStatus: z.enum(CONTRACT_STATUS).optional(),
         filter: filterArg,
         sort: sortArg,
@@ -65,6 +66,6 @@ export function registerContractTools({ server, client, readOnly }: ToolContext)
       }),
       annotations: UPDATE,
     },
-    ({ id, fields, version, dryRun }) => run(() => client.update('contract', id, toWeclappBody(fields), { version, dryRun })),
+    ({ id, fields, version, dryRun }) => run(() => auditedUpdate(ctx, 'weclapp_update_contract', 'contract', id, fields, { version, dryRun })),
   );
 }

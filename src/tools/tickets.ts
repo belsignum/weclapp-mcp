@@ -6,15 +6,17 @@ import {
   READ,
   UPDATE,
   allFieldsArg,
+  auditedCreate,
+  auditedUpdate,
   dryRunArg,
   fieldsArg,
   filterArg,
   idArg,
   pagingArgs,
+  refArg,
   run,
   search,
   sortArg,
-  toWeclappBody,
   versionArg,
   type ToolContext,
 } from './common.ts';
@@ -24,7 +26,8 @@ const TICKET_FIELDS =
 const TIME_RECORD_FIELDS = 'id,userId,startDate,durationSeconds,billableDurationSeconds,billable,description,ticketId,customerId,articleId,projectId,taskId,billableInvoiceStatus';
 const CLOSED_INTERNAL_STATUS = new Set(['CLOSED', 'FIXED']);
 
-export function registerTicketTools({ server, client, readOnly }: ToolContext): void {
+export function registerTicketTools(ctx: ToolContext): void {
+  const { server, client, readOnly, allowPublicComments } = ctx;
   /** IDs aller Ticketstatus, die nicht als erledigt/geschlossen gelten. */
   async function openStatusIds(): Promise<string[]> {
     const statuses = await client.list<Entity>('ticketStatus', { pageSize: 200, properties: 'id,internalTicketStatus' });
@@ -41,11 +44,11 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
         query: z.string().optional().describe('Suchbegriff im Betreff (Teilstring).'),
         ticketNumber: z.string().optional().describe('Exakte Ticketnummer.'),
         openOnly: z.boolean().optional().describe('true = nur offene Tickets (Status nicht erledigt/geschlossen).'),
-        ticketStatusId: z.string().optional().describe('Ticketstatus (weclapp_lookup resource=ticketStatus).'),
+        ticketStatusId: refArg('Ticketstatus (weclapp_lookup resource=ticketStatus).'),
         assignedToMe: z.boolean().optional().describe('true = nur Tickets, die dem Token-Nutzer zugewiesen sind.'),
-        assignedUserId: z.string().optional().describe('Zugewiesener Nutzer (weclapp_lookup resource=user).'),
-        partyId: z.string().optional().describe('Kunde (weclapp_search_parties).'),
-        contractId: z.string().optional().describe('Vertrag (weclapp_search_contracts).'),
+        assignedUserId: refArg('Zugewiesener Nutzer (weclapp_lookup resource=user).'),
+        partyId: refArg('Kunde (weclapp_search_parties).'),
+        contractId: refArg('Vertrag (weclapp_search_contracts).'),
         filter: filterArg,
         sort: sortArg,
         ...pagingArgs,
@@ -110,10 +113,10 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
       title: 'Zeitbuchungen lesen',
       description: 'Listet Zeitbuchungen (Zeiterfassung), z. B. zu einem Ticket, für einen Nutzer oder in einem Zeitraum. Dauer in Sekunden.',
       inputSchema: z.object({
-        ticketId: z.string().optional(),
+        ticketId: refArg('Ticket.'),
         mine: z.boolean().optional().describe('true = nur Buchungen des Token-Nutzers.'),
-        userId: z.string().optional().describe('Nutzer (weclapp_lookup resource=user).'),
-        customerId: z.string().optional().describe('Kunde (partyId).'),
+        userId: refArg('Nutzer (weclapp_lookup resource=user).'),
+        customerId: refArg('Kunde (partyId).'),
         from: z.string().optional().describe('Beginn ab (ISO-8601).'),
         to: z.string().optional().describe('Beginn vor (ISO-8601, exklusiv).'),
         filter: filterArg,
@@ -156,7 +159,7 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
       }),
       annotations: UPDATE,
     },
-    ({ id, fields, version, dryRun }) => run(() => client.update('ticket', id, toWeclappBody(fields), { version, dryRun })),
+    ({ id, fields, version, dryRun }) => run(() => auditedUpdate(ctx, 'weclapp_update_ticket', 'ticket', id, fields, { version, dryRun })),
   );
 
   server.registerTool(
@@ -164,34 +167,40 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
     {
       title: 'Kommentar zum Ticket',
       description:
-        'Schreibt einen Kommentar an ein Ticket. "internal" ist nur intern sichtbar, "public" ist auch für den Kunden sichtbar (z. B. im Kundenportal). Text vorher mit dem Nutzer abstimmen, besonders bei "public".',
+        allowPublicComments
+          ? 'Schreibt einen Kommentar an ein Ticket. "internal" ist nur intern sichtbar, "public" ist auch für den Kunden sichtbar (z. B. im Kundenportal). Text vorher mit dem Nutzer abstimmen, besonders bei "public".'
+          : 'Schreibt einen internen Kommentar an ein Ticket (für Kunden nicht sichtbar). Text vorher mit dem Nutzer abstimmen.',
       inputSchema: z.object({
         ticketId: idArg,
         text: z.string().min(1).describe('Kommentartext.'),
-        visibility: z.enum(['internal', 'public']).default('internal'),
+        visibility: z.enum(allowPublicComments ? ['internal', 'public'] : ['internal']).default('internal'),
         html: z.boolean().optional().describe('true = text ist HTML.'),
         solution: z.boolean().optional().describe('true = als Lösung des Tickets markieren.'),
-        parentCommentId: z.string().optional().describe('Antwort auf diesen Kommentar.'),
+        parentCommentId: refArg('Antwort auf diesen Kommentar.'),
         dryRun: dryRunArg,
       }),
       annotations: CREATE,
     },
-    ({ ticketId, text, visibility, html, solution, parentCommentId, dryRun }) => run(() =>
-      client.create(
+    ({ ticketId, text, visibility, html, solution, parentCommentId, dryRun }) => run(() => {
+      // Zweite Schranke neben dem Schema: öffentliche Kommentare nur, wenn ausdrücklich freigeschaltet
+      const isPublic = allowPublicComments && visibility === 'public';
+      return auditedCreate(
+        ctx,
+        'weclapp_add_ticket_comment',
         'comment',
-        toWeclappBody({
+        {
           entityName: 'ticket',
           entityId: ticketId,
           ...(html ? { htmlComment: text } : { comment: text }),
           // weclapp verlangt, dass genau eines der beiden Flags gesetzt ist
-          privateComment: visibility === 'internal',
-          publicComment: visibility === 'public',
+          privateComment: !isPublic,
+          publicComment: isPublic,
           solution: solution ?? false,
           parentCommentId,
-        }),
+        },
         dryRun,
-      ),
-    ),
+      );
+    }),
   );
 
   server.registerTool(
@@ -206,8 +215,8 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
         description: z.string().min(1).describe('Was gemacht wurde.'),
         start: z.string().optional().describe('Beginn der Arbeit (ISO-8601, z. B. 2026-11-12T09:00:00+01:00). Standard: jetzt minus Dauer.'),
         billableMinutes: z.number().int().min(0).optional().describe('Abrechenbare Minuten; Standard = minutes, 0 = nicht abrechenbar.'),
-        userId: z.string().optional().describe('Nutzer, für den gebucht wird (weclapp_lookup resource=user). Standard: Token-Nutzer.'),
-        articleId: z.string().optional().describe('Dienstleistungsartikel, der den Stundensatz bestimmt.'),
+        userId: refArg('Nutzer, für den gebucht wird (weclapp_lookup resource=user). Standard: Token-Nutzer.'),
+        articleId: refArg('Dienstleistungsartikel, der den Stundensatz bestimmt.'),
         fields: z.record(z.string(), z.unknown()).optional().describe('Weitere Felder der Zeitbuchung, z. B. {"placeOfServiceId": "12", "printOnPerformanceRecord": true}.'),
         dryRun: dryRunArg,
       }),
@@ -216,9 +225,11 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
     ({ ticketId, minutes, description, start, billableMinutes, userId, articleId, fields, dryRun }) => run(async () => {
       const user = userId ?? (await client.currentUser()).id;
       const startDate = start ? toEpochMs(start, 'start') : Date.now() - minutes * 60_000;
-      return client.create(
+      return auditedCreate(
+        ctx,
+        'weclapp_book_time',
         'timeRecord',
-        toWeclappBody({
+        {
           ...fields,
           ticketId,
           userId: user,
@@ -227,7 +238,7 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
           billableDurationSeconds: (billableMinutes ?? minutes) * 60,
           description,
           articleId,
-        }),
+        },
         dryRun,
       );
     }),
@@ -246,6 +257,6 @@ export function registerTicketTools({ server, client, readOnly }: ToolContext): 
       }),
       annotations: UPDATE,
     },
-    ({ id, fields, version, dryRun }) => run(() => client.update('timeRecord', id, toWeclappBody(fields), { version, dryRun })),
+    ({ id, fields, version, dryRun }) => run(() => auditedUpdate(ctx, 'weclapp_update_time_record', 'timeRecord', id, fields, { version, dryRun })),
   );
 }

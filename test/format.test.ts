@@ -30,9 +30,22 @@ test('loadWeclappConfig baut die URL aus dem Mandanten und prüft ihn', () => {
   assert.throws(() => loadWeclappConfig({}), /WECLAPP_TENANT fehlt/);
 });
 
-test('bearerToken liest nur echte Bearer-Header', () => {
-  assert.equal(bearerToken('Bearer abc-123'), 'abc-123');
-  assert.equal(bearerToken('bearer abc'), 'abc');
-  assert.equal(bearerToken('Basic abc'), undefined);
+test('bearerToken liest nur echte Bearer-Header mit zulässigen Zeichen', () => {
+  assert.equal(bearerToken('Bearer abc-12345'), 'abc-12345');
+  assert.equal(bearerToken('bearer abc-12345'), 'abc-12345');
+  assert.equal(bearerToken('Basic abc-12345'), undefined);
+  assert.equal(bearerToken('Bearer kurz'), undefined);
+  assert.equal(bearerToken('Bearer abc-12345\r\nX-Evil: 1'), undefined);
+  assert.equal(bearerToken(`Bearer ${'a'.repeat(513)}`), undefined);
   assert.equal(bearerToken(undefined), undefined);
+});
+
+test('loadWeclappConfig: sichere Standardwerte und Prüfung der Basis-URL', () => {
+  const config = loadWeclappConfig({ WECLAPP_TENANT: 'acme' });
+  assert.equal(config.allowPublicComments, false);
+  assert.equal(config.auditDir, undefined);
+  assert.equal(config.auditRetentionDays, 365);
+  assert.throws(() => loadWeclappConfig({ WECLAPP_BASE_URL: 'http://evil.example/api' }), /https/);
+  assert.throws(() => loadWeclappConfig({ WECLAPP_BASE_URL: 'https://user:pw@acme.weclapp.com/webapp/api/v2' }), /Zugangsdaten/);
+  assert.equal(loadWeclappConfig({ WECLAPP_BASE_URL: 'http://127.0.0.1:1234/webapp/api/v2' }).baseUrl, 'http://127.0.0.1:1234/webapp/api/v2');
 });

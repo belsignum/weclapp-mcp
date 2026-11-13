@@ -5,15 +5,17 @@ import {
   READ,
   UPDATE,
   allFieldsArg,
+  auditedCreate,
+  auditedUpdate,
   dryRunArg,
   fieldsArg,
   filterArg,
   idArg,
   pagingArgs,
+  refArg,
   run,
   search,
   sortArg,
-  toWeclappBody,
   versionArg,
   type ToolContext,
 } from './common.ts';
@@ -28,7 +30,8 @@ const articlePricesArg = z
   .optional()
   .describe('Verkaufspreise, z. B. [{"price": "49.90", "currencyId": "<EUR-id>", "salesChannel": "NET1", "priceScaleType": "SCALE_FROM", "priceScaleValue": "0"}]. Währungs-ID über weclapp_lookup resource=currency.');
 
-export function registerArticleTools({ server, client, readOnly }: ToolContext): void {
+export function registerArticleTools(ctx: ToolContext): void {
+  const { server, client, readOnly } = ctx;
   server.registerTool(
     'weclapp_search_articles',
     {
@@ -39,7 +42,7 @@ export function registerArticleTools({ server, client, readOnly }: ToolContext):
         articleNumber: z.string().optional().describe('Exakte Artikelnummer.'),
         active: z.boolean().optional().describe('true = nur aktive, false = nur inaktive Artikel.'),
         articleType: z.enum(ARTICLE_TYPES).optional(),
-        articleCategoryId: z.string().optional().describe('Artikelkategorie (weclapp_lookup resource=articleCategory).'),
+        articleCategoryId: refArg('Artikelkategorie (weclapp_lookup resource=articleCategory).'),
         filter: filterArg,
         sort: sortArg,
         ...pagingArgs,
@@ -99,7 +102,7 @@ export function registerArticleTools({ server, client, readOnly }: ToolContext):
       }),
       annotations: CREATE,
     },
-    ({ fields, dryRun, ...known }) => run(() => client.create('article', toWeclappBody({ ...fields, ...known }), dryRun)),
+    ({ fields, dryRun, ...known }) => run(() => auditedCreate(ctx, 'weclapp_create_article', 'article', { ...fields, ...known }, dryRun)),
   );
 
   server.registerTool(
@@ -117,6 +120,6 @@ export function registerArticleTools({ server, client, readOnly }: ToolContext):
       }),
       annotations: UPDATE,
     },
-    ({ id, fields, version, dryRun }) => run(() => client.update('article', id, toWeclappBody(fields), { version, dryRun })),
+    ({ id, fields, version, dryRun }) => run(() => auditedUpdate(ctx, 'weclapp_update_article', 'article', id, fields, { version, dryRun })),
   );
 }

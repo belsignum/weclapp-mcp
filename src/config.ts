@@ -3,12 +3,39 @@ export interface WeclappConfig {
   baseUrl: string;
   /** true: Schreib-Tools werden nicht registriert. */
   readOnly: boolean;
+  /** true: Kommentare dürfen für Kunden sichtbar (public) geschrieben werden. */
+  allowPublicComments: boolean;
+  /** Verzeichnis des Änderungsprotokolls. Ohne Protokoll gibt es keine Schreib-Tools. */
+  auditDir: string | undefined;
+  /** Aufbewahrung des Protokolls in Tagen (0 = unbegrenzt). */
+  auditRetentionDays: number;
 }
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/i;
 
 function flag(value: string | undefined): boolean {
   return value !== undefined && ['1', 'true', 'yes', 'ja', 'on'].includes(value.trim().toLowerCase());
+}
+
+function baseUrl(env: NodeJS.ProcessEnv): string {
+  const override = env.WECLAPP_BASE_URL?.trim();
+  if (override) {
+    const url = new URL(override);
+    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+    if (url.protocol !== 'https:' && !local) {
+      throw new Error('WECLAPP_BASE_URL muss https verwenden (http ist nur für localhost erlaubt).');
+    }
+    if (url.username || url.password) throw new Error('WECLAPP_BASE_URL darf keine Zugangsdaten enthalten.');
+    return url.toString().replace(/\/+$/, '');
+  }
+  const tenant = env.WECLAPP_TENANT?.trim();
+  if (!tenant) {
+    throw new Error('WECLAPP_TENANT fehlt (der Teil vor .weclapp.com in der weclapp-URL).');
+  }
+  if (!TENANT_PATTERN.test(tenant)) {
+    throw new Error(`WECLAPP_TENANT "${tenant}" ist ungültig: erwartet wird nur der Mandantenname, z. B. "acme".`);
+  }
+  return `https://${tenant}.weclapp.com/webapp/api/v2`;
 }
 
 /**
@@ -18,19 +45,16 @@ function flag(value: string | undefined): boolean {
  * WECLAPP_BASE_URL überschreibt die URL komplett (für Tests oder eigene Domains).
  */
 export function loadWeclappConfig(env: NodeJS.ProcessEnv = process.env): WeclappConfig {
-  const readOnly = flag(env.WECLAPP_READ_ONLY);
-  const override = env.WECLAPP_BASE_URL?.trim();
-  if (override) {
-    const url = new URL(override);
-    return { baseUrl: url.toString().replace(/\/+$/, ''), readOnly };
+  const retention = env.WECLAPP_AUDIT_RETENTION_DAYS?.trim();
+  const auditRetentionDays = retention ? Number(retention) : 365;
+  if (!Number.isInteger(auditRetentionDays) || auditRetentionDays < 0) {
+    throw new Error('WECLAPP_AUDIT_RETENTION_DAYS muss eine ganze Zahl ≥ 0 sein.');
   }
-
-  const tenant = env.WECLAPP_TENANT?.trim();
-  if (!tenant) {
-    throw new Error('WECLAPP_TENANT fehlt (der Teil vor .weclapp.com in der weclapp-URL).');
-  }
-  if (!TENANT_PATTERN.test(tenant)) {
-    throw new Error(`WECLAPP_TENANT "${tenant}" ist ungültig: erwartet wird nur der Mandantenname, z. B. "acme".`);
-  }
-  return { baseUrl: `https://${tenant}.weclapp.com/webapp/api/v2`, readOnly };
+  return {
+    baseUrl: baseUrl(env),
+    readOnly: flag(env.WECLAPP_READ_ONLY),
+    allowPublicComments: flag(env.WECLAPP_ALLOW_PUBLIC_COMMENTS),
+    auditDir: env.WECLAPP_AUDIT_DIR?.trim() || undefined,
+    auditRetentionDays,
+  };
 }

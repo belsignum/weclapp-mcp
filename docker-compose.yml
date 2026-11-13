@@ -10,14 +10,24 @@ services:
     environment:
       WECLAPP_TENANT: ${WECLAPP_TENANT:?WECLAPP_TENANT in .env setzen}
       WECLAPP_READ_ONLY: ${WECLAPP_READ_ONLY:-false}
+      WECLAPP_ALLOW_PUBLIC_COMMENTS: ${WECLAPP_ALLOW_PUBLIC_COMMENTS:-false}
+      WECLAPP_AUDIT_RETENTION_DAYS: ${WECLAPP_AUDIT_RETENTION_DAYS:-365}
       MCP_ALLOWED_HOSTS: ${MCP_DOMAIN:?MCP_DOMAIN in .env setzen}
+      # Nur Caddy erreicht den Container, daher darf X-Forwarded-For für das Rate-Limit gelten
+      MCP_TRUST_PROXY: "true"
     # kein Port nach außen: nur Caddy spricht mit dem Container
     expose:
       - "3000"
+    volumes:
+      # Änderungsprotokoll (JSON Lines, eine Datei pro Monat) – in die VPS-Backups aufnehmen
+      - audit_data:/data
     read_only: true
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    pids_limit: 200
+    mem_limit: 512m
+    networks: [internal]
 
   caddy:
     image: caddy:2-alpine
@@ -33,7 +43,16 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt:
+      - no-new-privileges:true
+    networks: [internal]
+
+networks:
+  internal:
 
 volumes:
+  audit_data:
   caddy_data:
   caddy_config:

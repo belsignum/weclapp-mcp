@@ -1,9 +1,21 @@
 {$MCP_DOMAIN} {
 	encode zstd gzip
 
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Cache-Control "no-store"
+		-Server
+	}
+
 	# Nur der MCP-Endpunkt und der Healthcheck werden durchgereicht
 	@mcp path /mcp /health
 	handle @mcp {
+		request_body {
+			max_size 1MB
+		}
 		reverse_proxy weclapp-mcp:3000 {
 			# SSE-Antworten sofort weiterreichen
 			flush_interval -1

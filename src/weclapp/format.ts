@@ -4,6 +4,8 @@
  */
 
 const DATE_KEY = /Date$/;
+/** Schlüssel, die beim Zuweisen den Prototyp eines Objekts verändern könnten. */
+const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
 /** Ersetzt Epoch-Millisekunden in Feldern auf "...Date" rekursiv durch ISO-8601-Strings. */
 export function datesToIso(value: unknown): unknown {
@@ -11,6 +13,7 @@ export function datesToIso(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
+      if (UNSAFE_KEYS.has(key)) continue;
       out[key] = DATE_KEY.test(key) && typeof v === 'number' ? new Date(v).toISOString() : datesToIso(v);
     }
     return out;
@@ -35,6 +38,7 @@ export function datesFromIso(value: unknown): unknown {
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
+      if (UNSAFE_KEYS.has(key)) continue;
       out[key] = DATE_KEY.test(key) && typeof v === 'string' && v.trim() !== '' ? toEpochMs(v, key) : datesFromIso(v);
     }
     return out;
@@ -62,6 +66,15 @@ export function parseFilter(filter: string | undefined): Record<string, string> 
     result[key] = value;
   }
   return result;
+}
+
+const SORT_PATTERN = /^-?[A-Za-z][A-Za-z0-9_.]*(,-?[A-Za-z][A-Za-z0-9_.]*)*$/;
+
+/** Prüft eine Sortierangabe wie "-lastModifiedDate" oder "name,-id". */
+export function checkSort(sort: string | undefined): string | undefined {
+  if (sort === undefined || sort.trim() === '') return undefined;
+  if (!SORT_PATTERN.test(sort.trim())) throw new Error(`Ungültige Sortierung "${sort.slice(0, 60)}". Erwartet: Feldname, optional mit "-" davor.`);
+  return sort.trim();
 }
 
 /** Entfernt undefined-Werte, damit nur gesetzte Filter an weclapp gehen. */

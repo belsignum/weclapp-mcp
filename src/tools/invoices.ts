@@ -1,6 +1,6 @@
 import * as z from 'zod';
 import { compact, contains, toEpochMs } from '../weclapp/format.ts';
-import { READ, allFieldsArg, filterArg, idArg, pagingArgs, run, search, sortArg, type ToolContext } from './common.ts';
+import { READ, allFieldsArg, filterArg, idArg, pagingArgs, refArg, run, search, sortArg, type ToolContext } from './common.ts';
 
 const STATUS = ['NEW', 'ENTRY_COMPLETED', 'DOCUMENT_CREATED', 'OPEN_ITEM_CREATED', 'CANCELLED'] as const;
 const PAYMENT_STATUS = ['OPEN', 'PAID', 'NO_OPEN_ITEM', 'CLEARED_WITH_CREDIT_NOTE', 'CREDIT_NOTE_CLEARED', 'UNKNOWN'] as const;
@@ -16,7 +16,7 @@ export function registerInvoiceTools({ server, client }: ToolContext): void {
       description: 'Sucht Ausgangsrechnungen und Gutschriften und liefert eine kompakte Übersicht (Nummer, Datum, Kunde, Status, Beträge). Für Positionen und Adressen weclapp_get_sales_invoice verwenden.',
       inputSchema: z.object({
         invoiceNumber: z.string().optional().describe('Rechnungsnummer (Teilstring).'),
-        customerId: z.string().optional().describe('Kunde als partyId (weclapp_search_parties).'),
+        customerId: refArg('Kunde als partyId (weclapp_search_parties).'),
         status: z.enum(STATUS).optional(),
         paymentStatus: z.enum(PAYMENT_STATUS).optional().describe('OPEN = offen, PAID = bezahlt.'),
         salesInvoiceType: z.enum(INVOICE_TYPES).optional(),

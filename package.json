@@ -1,6 +1,6 @@
 {
   "name": "weclapp-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP-Server für weclapp: Artikel, Rechnungen, Helpdesk-Tickets mit Zeiterfassung und Verträge",
   "type": "module",
   "license": "UNLICENSED",

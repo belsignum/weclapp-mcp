@@ -1,12 +1,16 @@
 import * as z from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
-import { WeclappError, type Entity, type ListOptions, type WeclappClient } from '../weclapp/client.ts';
-import { datesFromIso, datesToIso, parseFilter } from '../weclapp/format.ts';
+import type { AuditLog, AuditUser } from '../audit.ts';
+import { ID_PATTERN, WeclappError, type Entity, type ListOptions, type WeclappClient } from '../weclapp/client.ts';
+import { checkSort, datesFromIso, datesToIso, parseFilter } from '../weclapp/format.ts';
 
 export interface ToolContext {
   server: McpServer;
   client: WeclappClient;
+  /** true: keine Schreib-Tools (ausdrücklich so konfiguriert oder kein Änderungsprotokoll vorhanden). */
   readOnly: boolean;
+  allowPublicComments: boolean;
+  audit: AuditLog | undefined;
 }
 
 export const DEFAULT_PAGE_SIZE = 25;
@@ -17,19 +21,26 @@ export const UPDATE = { readOnlyHint: false, destructiveHint: true, idempotentHi
 
 // ---- gemeinsame Argumente -------------------------------------------------
 
-export const idArg = z.string().min(1).describe('Die interne weclapp-ID (numerischer String), nicht die Belegnummer.');
+export const idArg = z
+  .string()
+  .regex(ID_PATTERN, 'Erwartet wird die numerische weclapp-ID.')
+  .describe('Die interne weclapp-ID (numerischer String), nicht die Belegnummer.');
+
+/** Optionale ID als Filterwert. */
+export const refArg = (description: string) => z.string().regex(ID_PATTERN, 'Erwartet wird die numerische weclapp-ID.').optional().describe(description);
 
 export const pagingArgs = {
-  page: z.number().int().min(1).optional().describe('Seite, beginnend bei 1 (Standard 1).'),
+  page: z.number().int().min(1).max(100_000).optional().describe('Seite, beginnend bei 1 (Standard 1).'),
   pageSize: z.number().int().min(1).max(200).optional().describe(`Treffer pro Seite (Standard ${DEFAULT_PAGE_SIZE}, max. 200).`),
 };
 
 export const filterArg = z
   .string()
+  .max(2000)
   .optional()
   .describe('Zusätzliche weclapp-Filter als "feld-operator=wert", mehrere mit & verbunden, z. B. "tags-in=[VIP]&lastModifiedDate-gt=1767225600000". Operatoren: eq, ne, lt, gt, le, ge, like, ilike, notlike, notilike, in, notin, null, notnull. Datumsfelder erwarten hier Epoch-Millisekunden.');
 
-export const sortArg = z.string().optional().describe('Sortierfeld, mit "-" davor absteigend, z. B. "-lastModifiedDate".');
+export const sortArg = z.string().max(200).optional().describe('Sortierfeld, mit "-" davor absteigend, z. B. "-lastModifiedDate".');
 
 export const allFieldsArg = z.boolean().optional().describe('true liefert alle Felder statt der kompakten Übersicht.');
 
@@ -40,6 +51,7 @@ export const dryRunArg = z
 
 export const versionArg = z
   .string()
+  .max(40)
   .optional()
   .describe('Das Feld "version" aus dem zuletzt gelesenen Datensatz. Dann lehnt weclapp die Änderung ab, wenn jemand anderes den Datensatz inzwischen geändert hat.');
 
@@ -99,7 +111,7 @@ export async function search(
   const base: ListOptions = {
     page,
     pageSize,
-    sort: input.sort ?? options.defaultSort,
+    sort: checkSort(input.sort) ?? options.defaultSort,
     properties: input.allFields ? undefined : options.compactFields,
     extra: options.extra,
   };
@@ -120,11 +132,105 @@ export async function search(
   return { page, pageSize, count: Math.min(merged.length, pageSize), hasMore, result: merged.slice(0, pageSize) };
 }
 
-/** Wandelt Schreib-Felder für weclapp um (ISO-Datum → Epoch-ms) und entfernt undefined. */
+// ---- Schreiben mit Protokoll ----------------------------------------------
+
+/** Felder, die ein Aufrufer nie selbst setzen darf (weclapp verwaltet sie bzw. sie stehen im Pfad). */
+const PROTECTED_FIELDS = new Set(['id', 'version', 'createdDate', 'lastModifiedDate']);
+
+/** Wandelt Schreib-Felder für weclapp um (ISO-Datum → Epoch-ms), entfernt undefined und geschützte Felder. */
 export function toWeclappBody(fields: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) out[key] = value;
+    if (value !== undefined && !PROTECTED_FIELDS.has(key)) out[key] = value;
   }
   return datesFromIso(out) as Record<string, unknown>;
+}
+
+export async function auditUser(client: WeclappClient): Promise<AuditUser> {
+  const me = await client.currentUser();
+  const name = [me.firstName, me.lastName].filter(Boolean).join(' ') || String(me.username ?? me.email ?? '');
+  return { id: String(me.id), name };
+}
+
+function pick(record: Record<string, unknown> | undefined, keys: string[]): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of keys) out[key] = record?.[key] ?? null;
+  return out;
+}
+
+function requireAudit(ctx: ToolContext): AuditLog {
+  if (!ctx.audit || ctx.readOnly) throw new Error('Dieser Server ist im Nur-Lesen-Modus (kein Änderungsprotokoll konfiguriert).');
+  return ctx.audit;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Ändert einen Datensatz und protokolliert vorher den alten und nachher den neuen Stand
+ * der betroffenen Felder. Mit dryRun wird nichts protokolliert.
+ */
+export async function auditedUpdate(
+  ctx: ToolContext,
+  tool: string,
+  entity: string,
+  id: string,
+  fields: Record<string, unknown>,
+  options: { version?: string; dryRun?: boolean; undoes?: string } = {},
+) {
+  const body = toWeclappBody(fields);
+  const keys = Object.keys(body);
+  if (keys.length === 0) throw new Error('Keine änderbaren Felder angegeben.');
+  if (options.dryRun) {
+    return { dryRun: true, result: await ctx.client.update(entity, id, body, { version: options.version, dryRun: true }) };
+  }
+
+  const audit = requireAudit(ctx);
+  const [user, before] = await Promise.all([auditUser(ctx.client), ctx.client.get<Entity>(entity, id)]);
+  const changeId = await audit.begin({
+    user,
+    tool,
+    kind: 'update',
+    entity,
+    entityId: id,
+    before: pick(before, keys),
+    versionBefore: before.version,
+    undoes: options.undoes,
+  });
+
+  let result: Entity;
+  try {
+    // Mit der eben gelesenen Version schreiben: so passt der protokollierte Vorher-Stand sicher zur Änderung
+    result = await ctx.client.update<Entity>(entity, id, body, { version: options.version ?? before.version });
+  } catch (error) {
+    await audit.end(changeId, { status: 'failed', error: errorText(error) }).catch(() => {});
+    throw error;
+  }
+  const logged = await audit
+    .end(changeId, { status: 'done', after: pick(result, keys), versionAfter: result?.version })
+    .then(() => true, () => false);
+  return { changeId, ...(logged ? {} : { warning: 'Die Änderung wurde gespeichert, das Protokoll konnte aber nicht vervollständigt werden.' }), result };
+}
+
+/** Legt einen Datensatz an und protokolliert ihn. Mit dryRun wird nichts protokolliert. */
+export async function auditedCreate(ctx: ToolContext, tool: string, entity: string, fields: Record<string, unknown>, dryRun = false) {
+  const body = toWeclappBody(fields);
+  if (dryRun) return { dryRun: true, result: await ctx.client.create(entity, body, true) };
+
+  const audit = requireAudit(ctx);
+  const user = await auditUser(ctx.client);
+  const changeId = await audit.begin({ user, tool, kind: 'create', entity });
+
+  let result: Entity;
+  try {
+    result = await ctx.client.create<Entity>(entity, body);
+  } catch (error) {
+    await audit.end(changeId, { status: 'failed', error: errorText(error) }).catch(() => {});
+    throw error;
+  }
+  const logged = await audit
+    .end(changeId, { status: 'done', entityId: result?.id, after: pick(result, Object.keys(body)), versionAfter: result?.version })
+    .then(() => true, () => false);
+  return { changeId, ...(logged ? {} : { warning: 'Der Datensatz wurde angelegt, das Protokoll konnte aber nicht vervollständigt werden.' }), result };
 }
