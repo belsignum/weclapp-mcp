@@ -1,6 +1,7 @@
 import * as z from 'zod';
 import type { McpServer } from '@modelcontextprotocol/server';
 import type { AuditLog, AuditUser } from '../audit.ts';
+import type { WriteBudget } from '../budget.ts';
 import { ID_PATTERN, WeclappError, type Entity, type ListOptions, type WeclappClient } from '../weclapp/client.ts';
 import { checkSort, datesFromIso, datesToIso, parseFilter } from '../weclapp/format.ts';
 
@@ -11,6 +12,8 @@ export interface ToolContext {
   readOnly: boolean;
   allowPublicComments: boolean;
   audit: AuditLog | undefined;
+  /** Schreiblimit pro Nutzer und Stunde. */
+  writeBudget: WriteBudget;
 }
 
 export const DEFAULT_PAGE_SIZE = 25;
@@ -188,6 +191,7 @@ export async function auditedUpdate(
 
   const audit = requireAudit(ctx);
   const [user, before] = await Promise.all([auditUser(ctx.client), ctx.client.get<Entity>(entity, id)]);
+  ctx.writeBudget.take(user.id, options.undoes ? 'undo' : 'write');
   const changeId = await audit.begin({
     user,
     tool,
@@ -220,6 +224,7 @@ export async function auditedCreate(ctx: ToolContext, tool: string, entity: stri
 
   const audit = requireAudit(ctx);
   const user = await auditUser(ctx.client);
+  ctx.writeBudget.take(user.id);
   const changeId = await audit.begin({ user, tool, kind: 'create', entity });
 
   let result: Entity;

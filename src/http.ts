@@ -10,13 +10,16 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createMcpHandler } from '@modelcontextprotocol/server';
 import { hostHeaderValidation, originValidation, toNodeHandler } from '@modelcontextprotocol/node';
 import { AuditLog } from './audit.ts';
-import { bearerToken, FailureLimiter, TokenVerifier } from './auth.ts';
+import { bearerToken, FailureLimiter, rateLimitKey, TokenVerifier, type Verdict } from './auth.ts';
+import { WriteBudget } from './budget.ts';
 import { loadWeclappConfig } from './config.ts';
 import { createWeclappServer, SERVER_INFO, type ServerOptions } from './server.ts';
 import { WeclappClient, type Entity } from './weclapp/client.ts';
 
-export interface HttpOptions extends ServerOptions {
+export interface HttpOptions extends Omit<ServerOptions, 'writeBudget'> {
   baseUrl: string;
+  /** Maximale Schreibaktionen pro Nutzer und Stunde (Standard 120, 0 = unbegrenzt). */
+  maxWritesPerHour?: number;
   /** Hostnamen, unter denen der Server erreichbar sein darf (Schutz vor DNS-Rebinding). */
   allowedHosts: string[];
   /** true: Client-IP aus X-Forwarded-For lesen (nur hinter einem eigenen Reverse Proxy setzen). */
@@ -24,7 +27,7 @@ export interface HttpOptions extends ServerOptions {
   path?: string;
   fetch?: typeof fetch;
   log?: (message: string) => void;
-  /** Maximale Fehlversuche pro IP in 5 Minuten (Standard 10). */
+  /** Maximale Fehlversuche pro IP-Adresse (IPv6: pro /64-Netz) in 5 Minuten (Standard 10). */
   maxAuthFailures?: number;
 }
 
@@ -40,14 +43,16 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
   res.end(JSON.stringify(body));
 }
 
+/** Schlüssel für das Rate-Limit: die Adresse des Clients (IPv6 auf /64 gekürzt). */
 function clientIp(req: IncomingMessage, trustProxy: boolean): string {
   if (trustProxy) {
     const forwarded = req.headers['x-forwarded-for'];
-    // Der letzte Eintrag stammt vom eigenen Proxy; frühere kann der Client frei erfinden
-    const last = (Array.isArray(forwarded) ? forwarded.join(',') : forwarded)?.split(',').at(-1)?.trim();
+    // Der letzte Eintrag stammt vom eigenen Proxy; frühere kann der Client frei erfinden.
+    // Ist er keine IP-Adresse, gilt die Adresse der Verbindung.
+    const last = rateLimitKey((Array.isArray(forwarded) ? forwarded.join(',') : forwarded)?.split(',').at(-1));
     if (last) return last;
   }
-  return req.socket.remoteAddress ?? 'unknown';
+  return rateLimitKey(req.socket.remoteAddress) ?? 'unknown';
 }
 
 export function createHttpServer(options: HttpOptions) {
@@ -58,6 +63,8 @@ export function createHttpServer(options: HttpOptions) {
   const validateOrigin = originValidation(allowed);
   const verifier = new TokenVerifier(options.baseUrl, { fetch: options.fetch });
   const limiter = new FailureLimiter({ max: options.maxAuthFailures });
+  // Ein Zähler für alle Requests: pro Request entsteht eine neue Server-Instanz
+  const writeBudget = new WriteBudget(options.maxWritesPerHour ?? 120);
 
   const handler = createMcpHandler(
     (ctx) => {
@@ -65,7 +72,7 @@ export function createHttpServer(options: HttpOptions) {
       const user = ctx.authInfo?.extra?.user as Entity | undefined;
       if (!token || !user) throw new Error('Request ohne geprüften weclapp-Token.');
       const client = new WeclappClient(options.baseUrl, token, { fetch: options.fetch, currentUser: user });
-      return createWeclappServer(client, options);
+      return createWeclappServer(client, { readOnly: options.readOnly, allowPublicComments: options.allowPublicComments, audit: options.audit, writeBudget });
     },
     { maxRequestBodySize: MAX_BODY_BYTES, onerror: (error) => log(`[weclapp-mcp] ${error.message}`) },
   );
@@ -74,7 +81,13 @@ export function createHttpServer(options: HttpOptions) {
   async function handle(req: AuthedRequest, res: ServerResponse): Promise<void> {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
-    const url = new URL(req.url ?? '/', 'http://localhost');
+    let url: URL;
+    try {
+      url = new URL(req.url ?? '/', 'http://localhost');
+    } catch {
+      sendJson(res, 400, { error: 'Ungültige Anfrage.' });
+      return;
+    }
 
     if (url.pathname === '/health' && req.method === 'GET') {
       sendJson(res, 200, { status: 'ok' });
@@ -86,24 +99,42 @@ export function createHttpServer(options: HttpOptions) {
     }
     if (!validateHost(req, res) || !validateOrigin(req, res)) return;
 
-    const ip = clientIp(req, options.trustProxy ?? false);
-    const blocked = limiter.blockedFor(ip);
-    if (blocked > 0) {
-      sendJson(res, 429, { error: 'Zu viele fehlgeschlagene Anmeldungen. Bitte später erneut versuchen.' }, { 'Retry-After': String(blocked) });
+    const token = bearerToken(req.headers.authorization);
+    if (!token) {
+      // Ein Request ohne (wohlgeformten) Token ist kein Rateversuch und kostet weclapp nichts. Er zählt deshalb
+      // nicht fürs Rate-Limit: sonst könnte jede Webseite den Nutzer aussperren, indem sie seinen Browser
+      // ein paar Mal diese Adresse abrufen lässt (<img src=…>).
+      sendJson(res, 401, { error: 'Gültiger Header "Authorization: Bearer <weclapp-API-Token>" erforderlich.' }, { 'WWW-Authenticate': 'Bearer realm="weclapp-mcp"' });
       return;
     }
 
-    const unauthorized = () => {
-      limiter.fail(ip);
-      sendJson(res, 401, { error: 'Gültiger Header "Authorization: Bearer <weclapp-API-Token>" erforderlich.' }, { 'WWW-Authenticate': 'Bearer realm="weclapp-mcp"' });
-    };
+    // Das Rate-Limit bremst nur unbekannte Tokens. Einen Token, den weclapp kürzlich bestätigt hat,
+    // kann niemand von derselben Adresse aus mit Fehlversuchen aussperren.
+    const ip = clientIp(req, options.trustProxy ?? false);
+    const guess = !verifier.isKnown(token);
+    const attempt = verifier.key(token);
+    if (guess) {
+      const blocked = limiter.blockedFor(ip);
+      // Laufende Prüfungen zählen mit, damit viele gleichzeitige Requests das Limit nicht überrennen
+      if (blocked > 0 || !limiter.begin(ip, attempt)) {
+        sendJson(res, 429, { error: 'Zu viele fehlgeschlagene Anmeldungen. Bitte später erneut versuchen.' }, { 'Retry-After': String(blocked || 5) });
+        return;
+      }
+    }
 
-    const token = bearerToken(req.headers.authorization);
-    if (!token) return unauthorized();
-
-    const verdict = await verifier.verify(token);
+    let verdict: Verdict = { ok: false, reason: 'unavailable' };
+    try {
+      verdict = await verifier.verify(token);
+    } finally {
+      // Auch "weclapp nicht erreichbar" zählt für unbekannte Tokens: sonst ließen sich bei einer weclapp-Störung
+      // beliebig viele Anfragen über diesen Server an weclapp schicken.
+      if (guess) limiter.end(ip, attempt, !verdict.ok);
+    }
     if (!verdict.ok) {
-      if (verdict.reason === 'invalid') return unauthorized();
+      if (verdict.reason === 'invalid') {
+        sendJson(res, 401, { error: 'Gültiger Header "Authorization: Bearer <weclapp-API-Token>" erforderlich.' }, { 'WWW-Authenticate': 'Bearer realm="weclapp-mcp"' });
+        return;
+      }
       sendJson(res, 503, { error: 'weclapp ist gerade nicht erreichbar; der Token konnte nicht geprüft werden.' }, { 'Retry-After': '30' });
       return;
     }
@@ -138,13 +169,14 @@ async function main(): Promise<void> {
     .filter(Boolean);
   const trustProxy = ['1', 'true', 'yes'].includes((process.env.MCP_TRUST_PROXY ?? '').toLowerCase());
 
-  const audit = config.auditDir && !config.readOnly ? await AuditLog.open(config.auditDir, { retentionDays: config.auditRetentionDays }) : undefined;
+  const audit = config.auditDir && !config.readOnly ? await AuditLog.open(config.auditDir, { retentionDays: config.auditRetentionDays, maxBytes: config.auditMaxBytes }) : undefined;
 
   const { server, close } = createHttpServer({
     baseUrl: config.baseUrl,
     readOnly: config.readOnly,
     allowPublicComments: config.allowPublicComments,
     audit,
+    maxWritesPerHour: config.maxWritesPerHour,
     allowedHosts,
     trustProxy,
   });

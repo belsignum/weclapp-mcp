@@ -21,14 +21,32 @@ export function datesToIso(value: unknown): unknown {
   return value;
 }
 
-/** Wandelt ISO-Datumsangaben in einen Epoch-Millisekunden-Wert. */
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/i;
+/** Größter Zeitwert, den ein Date darstellen kann. */
+const MAX_EPOCH_MS = 8.64e15;
+
+/**
+ * Wandelt ISO-Datumsangaben in einen Epoch-Millisekunden-Wert.
+ *
+ * Bewusst streng: Date.parse allein liest auch "01.12.2026" (als 12. Januar) oder "Ticket 5" (als Mai 2001)
+ * klaglos ein. Ein falsch verstandenes Datum landet sonst unbemerkt in Verträgen, Tickets und Zeitbuchungen.
+ */
 export function toEpochMs(value: string, field = 'Datum'): number {
   const trimmed = value.trim();
-  if (/^\d{10,}$/.test(trimmed)) return Number(trimmed);
-  const ms = Date.parse(trimmed);
-  if (Number.isNaN(ms)) {
-    throw new Error(`${field} "${value}" ist kein gültiges Datum (erwartet ISO-8601, z. B. 2026-11-12 oder 2026-11-12T09:30:00+01:00).`);
+  const invalid = () => new Error(`${field} "${value.slice(0, 60)}" ist kein gültiges Datum (erwartet ISO-8601, z. B. 2026-11-12 oder 2026-11-12T09:30:00+01:00).`);
+  if (/^\d{10,16}$/.test(trimmed)) {
+    const epoch = Number(trimmed);
+    if (epoch > MAX_EPOCH_MS) throw invalid();
+    return epoch;
   }
+  const match = ISO_DATE.exec(trimmed);
+  if (!match) throw invalid();
+  const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+  // Den Kalendertag prüfen: der 31. Februar würde sonst stillschweigend zum 3. März
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) throw invalid();
+  const ms = Date.parse(trimmed.replace(' ', 'T'));
+  if (Number.isNaN(ms)) throw invalid();
   return ms;
 }
 

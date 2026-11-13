@@ -30,6 +30,10 @@ Jede Schreibaktion landet in einem **Änderungsprotokoll** und lässt sich mit e
 
 Es gibt bewusst keine Lösch-Tools und keinen freien API-Zugriff. Mit `WECLAPP_READ_ONLY=true` werden alle Schreib-Tools ausgeblendet. Jedes Schreib-Tool kennt `dryRun: true`: weclapp prüft die Änderung dann, ohne sie zu speichern.
 
+Pro Nutzer sind höchstens **120 Schreibaktionen pro Stunde** möglich (`WECLAPP_MAX_WRITES_PER_HOUR`, `0` = unbegrenzt). Das bremst Massenänderungen, etwa wenn ein manipulierter Ticket-Text die KI in eine Schleife schickt. Rückgängig-Aktionen haben ein eigenes, gleich großes Kontingent, `dryRun` zählt nicht. Für eine geplante Sammeländerung den Wert vorübergehend erhöhen.
+
+Datumsangaben nimmt der Server nur als ISO-8601 an (`2026-11-12` oder `2026-11-12T09:30:00+01:00`). Andere Schreibweisen wie `12.11.2026` lehnt er ab, statt sie zu erraten.
+
 Kommentare sind standardmäßig nur intern möglich. Für Kunden sichtbare Kommentare schaltest du mit `WECLAPP_ALLOW_PUBLIC_COMMENTS=true` frei.
 
 ## Änderungsprotokoll und Rückgängig
@@ -46,6 +50,8 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Sichtbarkeit:** Jeder sieht und ändert nur Einträge seines eigenen weclapp-Nutzers.
 - **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Auch das Rückgängigmachen wird protokolliert.
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
+- **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
+- **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
 - **Auf dem VPS ansehen:**
 
 ```bash
@@ -73,7 +79,7 @@ docker compose up -d --build
 curl https://mcp.example.com/health
 ```
 
-Erwartete Antwort: `{"status":"ok",...}`.
+Erwartete Antwort: `{"status":"ok"}`.
 
 Updates einspielen:
 
@@ -91,8 +97,10 @@ git pull && docker compose up -d --build
 | `WECLAPP_ALLOW_PUBLIC_COMMENTS` | nein | `true` = Kommentare dürfen für Kunden sichtbar sein (Standard: aus) |
 | `WECLAPP_AUDIT_DIR` | nein | Verzeichnis des Änderungsprotokolls; im Docker-Image `/data/audit`. Ohne Angabe: nur lesen |
 | `WECLAPP_AUDIT_RETENTION_DAYS` | nein | Aufbewahrung in Tagen (Standard 365, `0` = unbegrenzt) |
+| `WECLAPP_AUDIT_MAX_MB` | nein | Maximale Größe des Protokolls in MB (Standard 100, `0` = unbegrenzt); danach keine Schreibaktionen mehr |
+| `WECLAPP_MAX_WRITES_PER_HOUR` | nein | Schreibaktionen pro Nutzer und Stunde (Standard 120, `0` = unbegrenzt) |
 | `MCP_ALLOWED_HOSTS` | nein | Erlaubte Host-Header, kommagetrennt (Compose setzt ihn aus `MCP_DOMAIN`) |
-| `MCP_TRUST_PROXY` | nein | `true` = Client-IP aus `X-Forwarded-For` (nur hinter eigenem Proxy; Compose setzt es) |
+| `MCP_TRUST_PROXY` | nein | `true` = Client-IP aus `X-Forwarded-For` (nur hinter eigenem Proxy; Compose setzt es). Nie setzen, wenn der Port direkt erreichbar ist |
 | `PORT`, `HOST` | nein | Standard `3000` / `127.0.0.1` (im Container `0.0.0.0`) |
 | `WECLAPP_BASE_URL` | nein | Überschreibt die API-URL komplett (Tests, eigene Domain) |
 
@@ -178,14 +186,15 @@ npm install && npm run build
 ## Sicherheit
 
 - **Zugang nur mit gültigem weclapp-Token.** Ohne ihn antwortet `/mcp` mit `401`, auch die Tool-Liste bleibt verborgen.
-- **Schutz gegen Token-Raten:** Nach 10 Fehlversuchen in 5 Minuten wird die IP-Adresse gesperrt (`429`).
+- **Schutz gegen Token-Raten:** Nach 10 Fehlversuchen in 5 Minuten wird die IP-Adresse (bei IPv6 das /64-Netz) für unbekannte Tokens gesperrt (`429`). Ein Token, den weclapp in den letzten 24 Stunden bestätigt hat, bleibt davon unberührt: Fehlversuche anderer sperren dich nicht aus.
+- **Schutz gegen Massenänderungen:** Schreiblimit pro Stunde und Größenlimit fürs Protokoll (siehe oben).
 - **Nur über HTTPS betreiben.** Der Token steht in jedem Request; Caddy übernimmt TLS und schreibt kein Access-Log.
 - **Der Mandant ist fest eingestellt.** Der Server spricht nur mit `WECLAPP_TENANT` und folgt keinen Weiterleitungen.
 - **Host-Check gegen DNS-Rebinding:** Anfragen mit fremdem `Host`- oder `Origin`-Header werden abgelehnt.
 - **Texte aus weclapp sind Daten, keine Anweisungen.** Ticket-Texte können von Kunden stammen. Bestätigungen für Schreib-Tools im Client deshalb nicht pauschal abschalten.
 - Die MCP-Spezifikation rät formell davon ab, Tokens an eine Upstream-API durchzureichen. Für einen Server, den du nur selbst nutzt, ist das vertretbar. Öffentlich für Dritte anbieten solltest du ihn so nicht.
 
-Den Audit-Bericht mit allen Befunden und verbleibenden Risiken findest du in [SECURITY.md](SECURITY.md).
+Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest du in [SECURITY.md](SECURITY.md).
 
 ## Bekannte Grenzen
 

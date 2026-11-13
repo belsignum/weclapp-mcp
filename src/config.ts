@@ -9,6 +9,10 @@ export interface WeclappConfig {
   auditDir: string | undefined;
   /** Aufbewahrung des Protokolls in Tagen (0 = unbegrenzt). */
   auditRetentionDays: number;
+  /** Maximale Gesamtgröße des Protokolls in Bytes (0 = unbegrenzt). Ist sie erreicht, werden Schreibaktionen abgelehnt. */
+  auditMaxBytes: number;
+  /** Maximale Schreibaktionen pro Nutzer und Stunde (0 = unbegrenzt). */
+  maxWritesPerHour: number;
 }
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/i;
@@ -44,17 +48,23 @@ function baseUrl(env: NodeJS.ProcessEnv): string {
  * WECLAPP_TENANT ist der Mandant aus https://<tenant>.weclapp.com.
  * WECLAPP_BASE_URL überschreibt die URL komplett (für Tests oder eigene Domains).
  */
+/** Liest eine ganze Zahl ≥ 0 aus der Umgebung. */
+function count(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name]?.trim();
+  const value = raw ? Number(raw) : fallback;
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} muss eine ganze Zahl ≥ 0 sein.`);
+  return value;
+}
+
 export function loadWeclappConfig(env: NodeJS.ProcessEnv = process.env): WeclappConfig {
-  const retention = env.WECLAPP_AUDIT_RETENTION_DAYS?.trim();
-  const auditRetentionDays = retention ? Number(retention) : 365;
-  if (!Number.isInteger(auditRetentionDays) || auditRetentionDays < 0) {
-    throw new Error('WECLAPP_AUDIT_RETENTION_DAYS muss eine ganze Zahl ≥ 0 sein.');
-  }
+  const auditRetentionDays = count(env, 'WECLAPP_AUDIT_RETENTION_DAYS', 365);
   return {
     baseUrl: baseUrl(env),
     readOnly: flag(env.WECLAPP_READ_ONLY),
     allowPublicComments: flag(env.WECLAPP_ALLOW_PUBLIC_COMMENTS),
     auditDir: env.WECLAPP_AUDIT_DIR?.trim() || undefined,
     auditRetentionDays,
+    auditMaxBytes: count(env, 'WECLAPP_AUDIT_MAX_MB', 100) * 1024 * 1024,
+    maxWritesPerHour: count(env, 'WECLAPP_MAX_WRITES_PER_HOUR', 120),
   };
 }

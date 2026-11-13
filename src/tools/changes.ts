@@ -68,6 +68,7 @@ function summary(entry: ChangeEntry) {
     undoable: entry.status === 'done' && !entry.undoneBy && !entry.truncated && entry.kind !== 'delete' && ENTITY_SET.has(entry.entity),
     before: entry.before,
     after: entry.after,
+    ...(entry.omitted ? { hinweis: 'Der alte bzw. neue Stand ist zu groß für diese Übersicht und wurde weggelassen. Das Rückgängigmachen ist davon nicht betroffen.' } : {}),
   };
 }
 
@@ -115,56 +116,69 @@ export function registerChangeTools(ctx: ToolContext): void {
     },
     ({ changeId, dryRun }) => run(async () => {
       const me = await auditUser(client);
-      // Fremde und unbekannte IDs liefern bewusst dieselbe Meldung
-      const entry = await audit.get(changeId, me.id);
-      if (!entry) throw new Error('Diese Änderung gibt es im eigenen Protokoll nicht.');
-      if (entry.status !== 'done') throw new Error(`Diese Änderung hat den Status "${entry.status}" und kann nicht rückgängig gemacht werden.`);
-      if (entry.undoneBy) throw new Error(`Diese Änderung wurde bereits rückgängig gemacht (changeId ${entry.undoneBy}).`);
-      if (entry.truncated) throw new Error('Der alte Stand war zu groß für das Protokoll; diese Änderung lässt sich nicht automatisch zurücksetzen.');
-      if (!ENTITY_SET.has(entry.entity) || !entry.entityId) throw new Error('Dieser Protokolleintrag lässt sich nicht zurücksetzen.');
-      const { entity, entityId } = entry;
 
-      let current: Entity;
-      try {
-        current = await client.get<Entity>(entity, entityId);
-      } catch (error) {
-        if (error instanceof WeclappError && error.status === 404) throw new Error('Der Datensatz existiert in weclapp nicht mehr.');
-        throw error;
-      }
+      const undo = async () => {
+        // Fremde und unbekannte IDs liefern bewusst dieselbe Meldung
+        const entry = await audit.get(changeId, me.id);
+        if (!entry) throw new Error('Diese Änderung gibt es im eigenen Protokoll nicht.');
+        if (entry.status !== 'done') throw new Error(`Diese Änderung hat den Status "${entry.status}" und kann nicht rückgängig gemacht werden.`);
+        if (entry.undoneBy) throw new Error(`Diese Änderung wurde bereits rückgängig gemacht (changeId ${entry.undoneBy}).`);
+        if (entry.truncated) throw new Error('Der alte Stand war zu groß für das Protokoll; diese Änderung lässt sich nicht automatisch zurücksetzen.');
+        if (!ENTITY_SET.has(entry.entity) || !entry.entityId) throw new Error('Dieser Protokolleintrag lässt sich nicht zurücksetzen.');
+        const { entity, entityId } = entry;
 
-      if (entry.kind === 'update') {
-        const before = entry.before ?? {};
-        const after = entry.after ?? {};
-        const conflicts = Object.keys(before).filter((key) => !isDeepStrictEqual(current[key] ?? null, after[key] ?? null));
-        if (conflicts.length > 0) {
-          const details = conflicts.map((key) => `${key}: nach der Änderung ${preview(after[key])}, jetzt ${preview(current[key])}`).join('; ');
-          throw new Error(`Abgebrochen: Der Datensatz wurde seit der Änderung anders verändert (${details}). Bitte manuell prüfen.`);
-        }
-        const restore = restoreValues(before, current);
-        const outcome = await auditedUpdate(ctx, 'weclapp_undo_change', entity, entityId, restore, { version: current.version, dryRun, undoes: entry.id });
-        if ('changeId' in outcome) await audit.markUndone(entry.id, outcome.changeId);
-        return { undone: !dryRun, restored: restore, ...outcome };
-      }
-
-      if (entry.kind === 'create') {
-        if (entry.versionAfter && current.version !== entry.versionAfter) {
-          throw new Error('Abgebrochen: Der angelegte Datensatz wurde inzwischen verändert. Bitte manuell prüfen.');
-        }
-        if (dryRun) return { dryRun: true, wouldDelete: { entity, entityId } };
-        const id = await audit.begin({ user: me, tool: 'weclapp_undo_change', kind: 'delete', entity, entityId, before: current, versionBefore: current.version, undoes: entry.id });
+        let current: Entity;
         try {
-          await client.delete(entity, entityId);
+          current = await client.get<Entity>(entity, entityId);
         } catch (error) {
-          await audit.end(id, { status: 'failed', error: error instanceof Error ? error.message : String(error) }).catch(() => {});
-          if (entity === 'article') throw new Error(`${error instanceof Error ? error.message : error} – Ein bereits verwendeter Artikel lässt sich nicht löschen; stattdessen mit weclapp_update_article auf "active": false setzen.`);
+          if (error instanceof WeclappError && error.status === 404) throw new Error('Der Datensatz existiert in weclapp nicht mehr.');
           throw error;
         }
-        await audit.end(id, { status: 'done' }).catch(() => {});
-        await audit.markUndone(entry.id, id);
-        return { undone: true, changeId: id, deleted: { entity, entityId } };
-      }
 
-      throw new Error('Löschungen lassen sich nicht rückgängig machen.');
+        // Wird erst nach der Aktion in weclapp aufgerufen: ein Fehler beim Vermerken darf sie nicht als gescheitert melden
+        const mark = (by: string) =>
+          audit.markUndone(entry.id, by).then(
+            () => ({}),
+            () => ({ warning: 'Die Änderung wurde zurückgesetzt, konnte im Protokoll aber nicht als rückgängig gemacht vermerkt werden.' }),
+          );
+
+        if (entry.kind === 'update') {
+          const before = entry.before ?? {};
+          const after = entry.after ?? {};
+          const conflicts = Object.keys(before).filter((key) => !isDeepStrictEqual(current[key] ?? null, after[key] ?? null));
+          if (conflicts.length > 0) {
+            const details = conflicts.map((key) => `${key}: nach der Änderung ${preview(after[key])}, jetzt ${preview(current[key])}`).join('; ');
+            throw new Error(`Abgebrochen: Der Datensatz wurde seit der Änderung anders verändert (${details}). Bitte manuell prüfen.`);
+          }
+          const restore = restoreValues(before, current);
+          const outcome = await auditedUpdate(ctx, 'weclapp_undo_change', entity, entityId, restore, { version: current.version, dryRun, undoes: entry.id });
+          const marked = 'changeId' in outcome ? await mark(outcome.changeId) : {};
+          return { undone: !dryRun, restored: restore, ...outcome, ...marked };
+        }
+
+        if (entry.kind === 'create') {
+          if (entry.versionAfter && current.version !== entry.versionAfter) {
+            throw new Error('Abgebrochen: Der angelegte Datensatz wurde inzwischen verändert. Bitte manuell prüfen.');
+          }
+          if (dryRun) return { dryRun: true, wouldDelete: { entity, entityId } };
+          ctx.writeBudget.take(me.id, 'undo');
+          const id = await audit.begin({ user: me, tool: 'weclapp_undo_change', kind: 'delete', entity, entityId, before: current, versionBefore: current.version, undoes: entry.id });
+          try {
+            await client.delete(entity, entityId);
+          } catch (error) {
+            await audit.end(id, { status: 'failed', error: error instanceof Error ? error.message : String(error) }).catch(() => {});
+            if (entity === 'article') throw new Error(`${error instanceof Error ? error.message : error} – Ein bereits verwendeter Artikel lässt sich nicht löschen; stattdessen mit weclapp_update_article auf "active": false setzen.`);
+            throw error;
+          }
+          await audit.end(id, { status: 'done' }).catch(() => {});
+          return { undone: true, changeId: id, deleted: { entity, entityId }, ...(await mark(id)) };
+        }
+
+        throw new Error('Löschungen lassen sich nicht rückgängig machen.');
+      };
+
+      // Dieselbe Änderung nie zweimal gleichzeitig zurücksetzen (die Vorschau ändert nichts und braucht keine Sperre)
+      return dryRun ? undo() : audit.exclusive(`undo:${changeId}`, undo);
     }),
   );
 }

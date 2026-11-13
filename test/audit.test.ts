@@ -183,4 +183,117 @@ describe('AuditLog', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  // ---- Zweites Audit (13.11.2026) ----
+
+  test('bestehende Protokolldateien werden beim Start auf den Besitzer beschränkt', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'weclapp-mcp-audit-'));
+    try {
+      await writeFile(join(dir, '2026-10.jsonl'), '', { mode: 0o644 });
+      const log = await AuditLog.open(dir, { now: () => new Date('2026-11-13T00:00:00Z') });
+      assert.equal((await stat(join(dir, '2026-10.jsonl'))).mode & 0o777, 0o600);
+      log.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('Maximalgröße: neue Änderungen werden abgelehnt, begonnene lassen sich noch abschließen', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'weclapp-mcp-audit-'));
+    try {
+      const input = { user: { id: '1', name: 'A' }, tool: 't', kind: 'update', entity: 'ticket', entityId: '5', before: { text: 'x'.repeat(600) } } as const;
+      const log = await AuditLog.open(dir, { maxBytes: 1_000 });
+      const first = await log.begin(input);
+      const second = await log.begin(input);
+      await assert.rejects(log.begin(input), /Maximalgröße/);
+      await log.end(second, { status: 'done', after: { text: 'y' } });
+      assert.equal((await log.get(second, '1'))?.status, 'done');
+      assert.equal((await log.get(first, '1'))?.status, 'pending');
+      log.close();
+
+      // Die Größe wird auch nach einem Neustart aus den Dateien ermittelt
+      const reopened = await AuditLog.open(dir, { maxBytes: 1_000 });
+      await assert.rejects(reopened.begin(input), /Maximalgröße/);
+      reopened.close();
+      const unlimited = await AuditLog.open(dir, { maxBytes: 0 });
+      await unlimited.begin(input);
+      unlimited.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('list liefert genau die neuesten Einträge, auch bei vielen Einträgen und Filtern', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'weclapp-mcp-audit-'));
+    try {
+      let clock = Date.parse('2026-11-01T00:00:00Z');
+      const log = await AuditLog.open(dir, { now: () => new Date((clock += 1000)) });
+      const ids: string[] = [];
+      for (let i = 0; i < 60; i++) {
+        const user = { id: i % 2 ? '1' : '2', name: 'N' };
+        const create = i % 3 === 0;
+        const id = await log.begin({ user, tool: 't', kind: create ? 'create' : 'update', entity: i % 4 === 0 ? 'article' : 'ticket', entityId: create ? undefined : '5', before: create ? undefined : { n: i } });
+        // bei Anlagen steht die ID des Datensatzes erst im "end"
+        if (i !== 59) await log.end(id, { status: 'done', entityId: create ? String(900 + i) : undefined, after: { n: i + 1 } });
+        ids.push(id);
+      }
+      const mine = await log.list({ userId: '1', limit: 5 });
+      assert.deepEqual(mine.map((e) => e.id), [59, 57, 55, 53, 51].map((i) => ids[i]));
+      assert.equal(mine[0].status, 'pending', 'begonnene Einträge ohne Abschluss erscheinen ebenfalls');
+      assert.deepEqual(mine[2].before, { n: 55 });
+      assert.deepEqual(mine[2].after, { n: 56 });
+
+      const created = await log.list({ userId: '1', entityId: '927', limit: 5 });
+      assert.deepEqual(created.map((e) => e.id), [ids[27]]);
+      const tickets = await log.list({ userId: '2', entity: 'article', limit: 100 });
+      assert.deepEqual(tickets.map((e) => e.id), [56, 52, 48, 44, 40, 36, 32, 28, 24, 20, 16, 12, 8, 4, 0].map((i) => ids[i]));
+      const since = await log.list({ userId: '2', since: Date.parse('2026-11-01T00:01:40Z'), limit: 100 });
+      assert.ok(since.length > 0 && since.every((e) => Date.parse(e.time) >= Date.parse('2026-11-01T00:01:40Z')));
+
+      await log.markUndone(ids[57], ids[59]);
+      assert.equal((await log.list({ userId: '1', limit: 5 }))[1].undoneBy, ids[59]);
+      assert.equal((await log.get(ids[57], '1'))?.undoneBy, ids[59]);
+      log.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('gefälschte Zeilen können weder einen Eintrag übernehmen noch ungeprüfte Werte einschleusen', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'weclapp-mcp-audit-'));
+    try {
+      const log = await AuditLog.open(dir);
+      const id = await log.begin({ user: { id: '1', name: 'A' }, tool: 't', kind: 'update', entity: 'ticket', entityId: '5', before: { a: 1 } });
+      await log.end(id, { status: 'done', after: { a: 2 } });
+      const file = join(dir, (await readdir(dir))[0]);
+      const forged = [
+        // dieselbe id noch einmal, diesmal für einen anderen Nutzer und mit anderem Ziel
+        { v: 1, phase: 'begin', id, time: '2099-01-01T00:00:00.000Z', user: { id: '2', name: 'B' }, tool: 't', kind: 'update', entity: 'contract', entityId: '60', before: { name: 'gekapert' } },
+        { v: 1, phase: 'end', id, time: '2099-01-01T00:00:01.000Z', status: 'done', after: { name: 'x' } },
+        // unerwartete Typen
+        { v: 1, phase: 'begin', id: '00000000-0000-4000-8000-000000000001', time: '2026-11-13T00:00:00.000Z', user: { id: '1' }, tool: 't', kind: 'drop', entity: 'ticket', entityId: '5' },
+        { v: 1, phase: 'begin', id: '00000000-0000-4000-8000-000000000002', time: 20261113, user: { id: '1' }, tool: 't', kind: 'update', entity: 'ticket', entityId: '5' },
+        { v: 1, phase: 'begin', id: '00000000-0000-4000-8000-000000000003', time: '2026-11-13T00:00:00.000Z', user: { id: '1' }, tool: 't', kind: 'update', entity: 'ticket', entityId: { $ne: 1 }, before: ['kein', 'Objekt'] },
+        null,
+        [1, 2, 3],
+      ];
+      await writeFile(file, forged.map((line) => `${JSON.stringify(line)}\n`).join(''), { flag: 'a' });
+
+      const mine = await log.get(id, '1');
+      assert.equal(mine?.entity, 'ticket');
+      assert.deepEqual(mine?.before, { a: 1 });
+      assert.deepEqual(mine?.after, { a: 2 });
+      // get() ist die Grundlage fürs Rückgängigmachen: dort gilt immer die erste Zeile zu einer id
+      assert.equal(await log.get(id, '2'), undefined, 'der Eintrag bleibt beim ursprünglichen Nutzer');
+      assert.equal(await log.get('00000000-0000-4000-8000-000000000001', '1'), undefined);
+      assert.equal(await log.get('00000000-0000-4000-8000-000000000002', '1'), undefined);
+      const odd = await log.get('00000000-0000-4000-8000-000000000003', '1');
+      assert.equal(odd?.entityId, undefined);
+      assert.equal(odd?.before, undefined);
+      assert.deepEqual((await log.list({ userId: '1' })).map((e) => e.id).sort(), [id, '00000000-0000-4000-8000-000000000003'].sort());
+      log.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

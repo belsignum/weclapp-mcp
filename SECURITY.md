@@ -1,18 +1,19 @@
 # Sicherheit
 
-Stand: 13.11.2026, Version 0.2.0. Geprüft wurde der eigene Code dieses Repos: HTTP-Server, weclapp-Client, Tools, Änderungsprotokoll, Docker- und Caddy-Konfiguration.
+Stand: 13.11.2026, Version 0.2.0, nach zwei Audits. Geprüft wurde der eigene Code dieses Repos: HTTP-Server, weclapp-Client, Tools, Änderungsprotokoll, Docker- und Caddy-Konfiguration.
 
 **Nicht geprüft:** weclapp selbst, der VPS (Firewall, SSH, Updates) und das Verhalten gegen einen echten weclapp-Mandanten. Alle Angriffe liefen gegen einen nachgebauten weclapp-Server.
 
 ## Schutzmodell in Kurzform
 
 - **Zugang nur mit gültigem weclapp-Token.** Jeder Request an `/mcp` braucht `Authorization: Bearer <weclapp-API-Token>`. Bevor der Server irgendetwas verarbeitet, bestätigt weclapp den Token für den fest eingestellten Mandanten. Ohne gültigen Token gibt es nur `401`, auch keine Tool-Liste.
-- **Der Server speichert keinen Token.** Im Arbeitsspeicher liegt für 5 Minuten nur ein SHA-256-Hash als Cache-Schlüssel.
+- **Der Server speichert keinen Token.** Im Arbeitsspeicher liegt nur ein SHA-256-Hash: 5 Minuten als Cache-Schlüssel und bis zu 24 Stunden als Merkmal „von weclapp bestätigt“ (siehe Befund 12).
 - **Rechte kommen von weclapp.** Der Server kann nie mehr als der Nutzer, dem der Token gehört.
 - **Schreiben nur mit Protokoll.** Ohne Änderungsprotokoll (`WECLAPP_AUDIT_DIR`) bietet der Server keine Schreib-Tools an.
 - **Protokoll pro Nutzer.** `weclapp_list_changes` und `weclapp_undo_change` zeigen und ändern nur Einträge des eigenen weclapp-Nutzers.
+- **Schreiben ist gedeckelt.** Pro Nutzer sind höchstens 120 Schreibaktionen pro Stunde möglich (`WECLAPP_MAX_WRITES_PER_HOUR`), das Protokoll wächst höchstens auf 100 MB (`WECLAPP_AUDIT_MAX_MB`).
 
-## Audit vom 13.11.2026
+## Erstes Audit vom 13.11.2026
 
 Jede Lücke wurde zuerst am laufenden Server nachgewiesen, dann geschlossen und mit einem Angriffstest in `test/security.test.ts` abgesichert.
 
@@ -37,19 +38,70 @@ Geprüft und ohne Befund:
 - **Geheimnisse im Repo:** keine; `.env` ist von Git und vom Docker-Build ausgeschlossen.
 - **Fehlermeldungen und Logs:** enthalten keinen Token. Caddy schreibt kein Access-Log.
 
+## Zweites Audit vom 13.11.2026
+
+Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst ohne Kenntnis des ersten Berichts gelesen, danach wurde jeder Punkt des ersten Audits gegengeprüft. Jeder Befund wurde am laufenden Server gegen den nachgebauten weclapp-Server nachgewiesen, dann behoben und mit einem Test abgesichert, der auf dem alten Stand fehlschlägt (`test/security.test.ts`, `test/audit.test.ts`, `test/limits.test.ts`).
+
+| # | Befund | Nachweis | Schwere | Status |
+|---|---|---|---|---|
+| 11 | **Rate-Limit ließ sich mit gleichzeitigen Requests überrennen.** Die Sperre wurde geprüft, bevor weclapp antwortete; gezählt wurde erst danach. Der Fix zu Befund 2 war damit wirkungslos, sobald jemand parallel statt nacheinander rät. | 200 parallele Rateversuche bei Limit 5 und 150 ms Antwortzeit: 200 Anfragen an weclapp, keine einzige `429`. | mittel | behoben: laufende Prüfungen zählen mit; derselbe Token zählt dabei nur einmal |
+| 12 | **Aussperren ohne Token.** Auch Requests ganz ohne Token zählten als Fehlversuch, und die Sperre traf danach auch den gültigen Token. Eine beliebige Webseite kann den Browser des Nutzers solche Requests schicken lassen (`<img src="https://…/mcp">`, ohne `Origin`-Header) und ihn so dauerhaft aussperren. | 10 `GET /mcp` ohne Token, danach `429` für den gültigen Token. | mittel | behoben: Requests ohne wohlgeformten Token zählen nicht; ein Token, den weclapp in den letzten 24 Stunden bestätigt hat, wird vom Rate-Limit nicht gebremst |
+| 13 | **Rate-Limit pro einzelner IPv6-Adresse.** Ein gewöhnlicher Anschluss hat mindestens ein /64-Netz und damit beliebig viele Adressen. Zusätzlich wurde die Sperrliste bei 10 000 Einträgen komplett geleert, also auch alle bestehenden Sperren. | 30 Rateversuche von 30 Adressen desselben /64 bei Limit 3: 30 Anfragen an weclapp. | niedrig bis mittel | behoben: IPv6 wird auf das /64 gekürzt, IPv4 in IPv6-Schreibweise auf die IPv4-Adresse; bei voller Liste fallen nur die ältesten Einträge heraus |
+| 14 | **Bei einer weclapp-Störung griff das Rate-Limit nicht.** Antwortete weclapp mit `5xx` oder gar nicht, wurde der Versuch weder gezählt noch gemerkt. Über den Server ließen sich dann beliebig viele Anfragen an weclapp schicken, mit der Adresse des VPS als Absender. | 40 Requests bei Limit 3, weclapp antwortet `500`: 40 Anfragen an weclapp. | niedrig | behoben: für unbekannte Tokens zählt auch eine gescheiterte Prüfung |
+| 15 | **Protokoll ließ sich aufblähen, bis der Container abstürzt.** Jede Schreibaktion protokolliert bis zu 2 × 256 kB, ohne Obergrenze für die Gesamtgröße. Gelesen wurde das Protokoll immer vollständig in den Speicher, und `weclapp_list_changes` lieferte alle Stände in voller Länge. | 100 Schreibaktionen mit großem Feld: 47 MB Protokoll. Ein `weclapp_list_changes` mit `limit: 100` danach: 47 MB Antwort, 764 MB Speicher bei 512 MB Container-Limit. | mittel (nur mit gültigem Token, etwa durch Prompt Injection oder einen Agenten in einer Schleife) | behoben: zeilenweises Lesen mit festem Speicherbedarf (273 MB im selben Versuch, davon 256 MB Grundlast des Testprozesses), große Stände fehlen in der Übersicht, Gesamtgröße über `WECLAPP_AUDIT_MAX_MB` begrenzt |
+| 16 | **Massenänderungen ohne Bremse.** Ein einziger HTTP-Request kann als JSON-RPC-Batch bis zu 100 Tool-Aufrufe enthalten; eine serverseitige Grenze für Schreibaktionen gab es nicht. | Ein Request, 100 Zeitbuchungen. | mittel | entschärft: höchstens `WECLAPP_MAX_WRITES_PER_HOUR` Schreibaktionen pro Nutzer und Stunde (Standard 120). Rückgängig hat ein eigenes, gleich großes Kontingent; `dryRun` zählt nicht |
+| 17 | **Datumsangaben wurden falsch statt gar nicht gelesen.** `Date.parse` nimmt fast alles: `01.12.2026` wurde zum 12. Januar 2026, `Ticket 5` zum Mai 2001, der 31. Februar zum 3. März. Solche Werte landeten ohne Fehlermeldung in Vertragsenden, Fälligkeiten und Zeitbuchungen. | `toEpochMs("01.12.2026")` ergibt den 12.01.2026. | mittel (Datenintegrität) | behoben: nur noch ISO-8601 und Epoch-Millisekunden, mit Prüfung des Kalendertags |
+| 18 | **Dieselbe Änderung ließ sich mehrfach gleichzeitig zurücksetzen.** Geschützt hat allein die Versionsprüfung von weclapp. Wo sie nicht greift, liefen parallele Undo-Aufrufe alle durch. | 3 parallele `weclapp_undo_change` auf eine Zeitbuchung ohne `version`: 3 Schreibzugriffe, 3 Protokolleinträge. | niedrig | behoben: pro Änderung läuft nur ein Rückgängig-Vorgang |
+| 19 | **Kleinere Härtungen.** (a) Mit `MCP_TRUST_PROXY` wurde jeder beliebige Text aus `X-Forwarded-For` als Schlüssel fürs Rate-Limit übernommen. (b) Bereits vorhandene Protokolldateien behielten zu offene Rechte (`0644`). (c) Protokollzeilen mit unerwarteten Typen wurden ungeprüft fürs Rückgängigmachen verwendet, und eine zweite `begin`-Zeile mit derselben ID konnte einen Eintrag einem anderen Nutzer zuschlagen. (d) `GET //` führte zu `500`. (e) Schlug nach einem erfolgreichen Undo nur der Vermerk im Protokoll fehl, meldete das Tool einen Fehler. | (a) bis (d) einzeln nachgestellt, (e) aus dem Code abgeleitet | niedrig | behoben: (a) nur gültige IP-Adressen, sonst die Adresse der Verbindung; (b) `0600` beim Start; (c) Typprüfung, die erste Zeile zu einer ID gilt; (d) `400`; (e) Erfolg mit Warnung |
+
+### Gegenprüfung des ersten Audits
+
+- **Befund 2 (Token-Raten) war nicht dicht:** siehe 11, 13 und 14. Die damalige Lösung hatte außerdem die Nebenwirkung aus Befund 12.
+- **Befunde 1, 3, 4, 5, 7, 9** halten: Code gelesen, die Angriffstests des ersten Audits laufen weiter. Zusätzlich versucht: Pfade wie `//`, `/mcp/`, `/health/../mcp` und eine absolute URL in der Request-Zeile sowie `fields` in `weclapp_book_time` mit `id`, `version`, fremdem Nutzer und fremdem Ticket.
+- **Befund 6 (öffentliche Kommentare)** hält: `visibility` in anderer Schreibweise, zusätzliche Argumente wie `publicComment: true` und der Weg über `fields` anderer Tools führen nicht zu einem öffentlichen Kommentar.
+- **Befund 8 (Request-Größe)** hält, auch ohne `Content-Length` (chunked). Der zugehörige Test war allerdings vom Timing abhängig und schlug fehl, wenn die Testdatei allein lief; er ist jetzt deterministisch.
+- **Befund 10 (Container)** konnte nur gelesen, nicht gebaut werden: Docker Hub war nicht erreichbar.
+
+### Geprüft und ohne Befund
+
+- **Tief verschachtelte Eingaben** (100 000 Ebenen in `fields`): Fehlerergebnis statt Absturz, der Server läuft weiter.
+- **Abbruch der Verbindung mitten in einer Schreibaktion:** Die Änderung wird zu Ende geführt und vollständig protokolliert.
+- **Wettlauf zwischen Schreiben und Rückgängig** auf demselben Datensatz: Der Server schreibt mit der zuvor gelesenen `version`; weclapp lehnt den Verlierer ab.
+- **Fremde Protokolleinträge:** nicht lesbar und nicht rücksetzbar; fremde und unbekannte IDs sind nicht unterscheidbar.
+- **Nur-Lesen-Modus:** Schreib-Tools und `weclapp_undo_change` sind nicht aufrufbar, auch nicht mit `dryRun`.
+- **Sitzungen und Streams:** Der Server ist zustandslos. Eine mitgeschickte Session-ID wird ignoriert, `GET` und `DELETE` enden mit `405`, es gibt keine offenen Streams, die einen Token-Widerruf überdauern.
+- **Browser-Zugriffe:** Der Server sendet keine CORS-Header, eine fremde Webseite kann also keinen Request mit `Authorization`-Header absetzen. `Origin: null` wird abgelehnt.
+- **Lieferkette:** `npm audit` meldet 0 Schwachstellen; alle 40 Pakete im Lockfile stammen von registry.npmjs.org, haben eine Prüfsumme und keine Installationsskripte.
+- **Fehlermeldungen:** enthalten keinen Token.
+
+### Nicht geprüft
+
+- **Alles, was nur ein echter weclapp-Mandant zeigt:** ob `dryRun` wirklich nichts speichert, ob die Versionsprüfung bei jedem Datentyp greift, welche Ticket-Felder der Kunde zu sehen bekommt und wann weclapp E-Mails verschickt.
+- **Docker-Image und Laufzeit-Härtung:** Der Build brach beim Laden des Basis-Images mit einem Timeout ab. `docker compose config` und `npm run build` laufen.
+- **Caddy:** Dass Caddy ein vom Client mitgeschicktes `X-Forwarded-For` verwirft, ist laut Dokumentation das Standardverhalten, wurde aber nicht nachgestellt. Der Server verlässt sich nicht darauf: Er wertet nur den letzten Eintrag aus.
+
 ## Verbleibende Risiken
 
-- **Prompt Injection ist nicht vollständig lösbar.** Ticket-Texte, Kommentare und Namen stammen teils von Kunden. Der Server weist das Modell an, sie als Daten zu behandeln, erzwingen kann er es nicht. Dagegen helfen: Bestätigungen im Client nicht pauschal abschalten, `WECLAPP_READ_ONLY=true` wo Schreiben nicht nötig ist, und das Änderungsprotokoll mit Undo.
+- **Prompt Injection ist nicht vollständig lösbar.** Ticket-Texte, Kommentare und Namen stammen teils von Kunden. Der Server weist das Modell an, sie als Daten zu behandeln (auch direkt im Ergebnis von `weclapp_get_ticket`), erzwingen kann er es nicht. Was ein präparierter Text im schlimmsten Fall erreicht, wenn das Modell ihm folgt und der Client nicht nachfragt:
+  - **Ändern:** bis zu 120 Schreibaktionen pro Stunde im Rahmen der Rechte des Tokens, also Tickets, Verträge, Artikel und Zeitbuchungen ändern sowie interne Kommentare schreiben. Ganze Datensätze löschen kann er nur, wenn sie zuvor über diesen Server angelegt wurden; Listeneinträge wie Vertragspositionen oder Preise lassen sich über eine Änderung entfernen. Alles steht im Protokoll und lässt sich zurücksetzen.
+  - **Lesen:** alles, was der Token lesen darf. Der Server kann nicht verhindern, dass ein Client diese Daten über ein *anderes* Werkzeug nach außen gibt (Web-Zugriff, E-Mail). Das ist der wahrscheinlichste Abflussweg.
+  - **Abfluss über weclapp selbst (Vermutung, nicht prüfbar):** Öffentliche Kommentare sind gesperrt. Felder, die der Kunde trotzdem zu sehen bekommt, etwa der Ticket-Betreff im Kundenportal, die Zuordnung eines Tickets zu einem anderen Kunden oder Artikeltexte auf Belegen, sind es nicht. Sie zu sperren würde das Bearbeiten von Tickets und Artikeln entwerten.
+  - Dagegen helfen: Bestätigungen im Client nicht pauschal abschalten, ein weclapp-Nutzer mit genau den nötigen Rechten, `WECLAPP_READ_ONLY=true` wo Schreiben nicht nötig ist, ein knapperes `WECLAPP_MAX_WRITES_PER_HOUR`.
 - **Wer den Token hat, hat den Zugriff.** Der Token liegt in der Client-Konfiguration jedes Geräts. Bei Verlust eines Geräts den Token in weclapp löschen; spätestens 5 Minuten später ist er auch hier wertlos.
-- **Aussperren über die eigene IP:** Wer von derselben IP-Adresse aus 10 falsche Tokens schickt, sperrt diese Adresse für bis zu 5 Minuten.
-- **Rate-Limit und Cache liegen im Arbeitsspeicher** und gelten pro Container. Nach einem Neustart sind sie leer.
+- **Aussperren ist nur noch im Ausnahmefall möglich:** Nach einem Neustart des Containers ist kein Token „bekannt“. Laufen genau dann von derselben Adresse 10 Fehlversuche auf, wartet auch der richtige Token bis zu 5 Minuten.
+- **Verteiltes Raten** über sehr viele Adressen wird nicht global begrenzt. Eine globale Sperre könnte jeder auslösen und damit den einzigen Nutzer aussperren. Ein weclapp-Token ist eine zufällige UUID; Raten ist aussichtslos, es kostet nur Anfragen.
+- **`MCP_TRUST_PROXY` gehört nur hinter einen eigenen Proxy.** Ist der Port des Containers zusätzlich direkt erreichbar, kann jeder die Absenderadresse fälschen, das Rate-Limit umgehen und fremde Adressen sperren. Die mitgelieferte Compose-Datei veröffentlicht den Port nicht.
+- **Rate-Limit, Schreiblimit und Cache liegen im Arbeitsspeicher** und gelten pro Container. Nach einem Neustart sind sie leer.
+- **Ein volles Protokoll sperrt das Schreiben.** Das ist Absicht (ohne Protokoll keine Änderung), braucht dann aber einen Eingriff: `WECLAPP_AUDIT_MAX_MB` erhöhen oder alte Monatsdateien sichern und entfernen. Bei normaler Nutzung sind 100 MB in der Aufbewahrungsfrist nicht zu erreichen.
 - **Das Protokoll ist manipulierbar, wenn der VPS kompromittiert ist.** Es ist ein Arbeitsprotokoll mit Undo, kein revisionssicheres Archiv.
 - **Statusänderungen an Tickets** können je nach weclapp-Einstellung E-Mails an Kunden auslösen. Das steuert weclapp, nicht dieser Server.
-- **Basis-Images** sind per Tag (`node:24-alpine`, `caddy:2-alpine`) und nicht per Digest festgelegt.
+- **Basis-Images** sind per Tag (`node:24-alpine`, `caddy:2-alpine`) und nicht per Digest festgelegt. Der Caddy-Container hat kein Speicherlimit und kein schreibgeschütztes Dateisystem; beides ließ sich ohne lauffähigen Build nicht testen und blieb deshalb unverändert.
 
 ## Empfehlungen für den Betrieb
 
 - Einen eigenen weclapp-Nutzer mit genau den nötigen Rechten für den Token verwenden.
+- Den Server nur über Caddy erreichbar machen; Port 3000 nie zusätzlich veröffentlichen.
+- Vor größeren geplanten Sammeländerungen `WECLAPP_MAX_WRITES_PER_HOUR` vorübergehend erhöhen, danach zurücksetzen.
 - Auf dem VPS nur die Ports 80, 443 und SSH öffnen; SSH nur mit Schlüssel.
 - Das Volume `audit_data` in die Backups aufnehmen.
 - Regelmäßig aktualisieren: `git pull && docker compose build --pull && docker compose up -d`.

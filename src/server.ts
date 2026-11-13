@@ -1,5 +1,6 @@
 import { McpServer } from '@modelcontextprotocol/server';
 import type { AuditLog } from './audit.ts';
+import type { WriteBudget } from './budget.ts';
 import type { WeclappClient } from './weclapp/client.ts';
 import { registerArticleTools } from './tools/articles.ts';
 import { registerChangeTools } from './tools/changes.ts';
@@ -15,6 +16,8 @@ export interface ServerOptions {
   allowPublicComments: boolean;
   /** Änderungsprotokoll. Ohne Protokoll werden keine Schreib-Tools angeboten. */
   audit: AuditLog | undefined;
+  /** Schreiblimit pro Nutzer und Stunde; muss über alle Requests hinweg dieselbe Instanz sein. */
+  writeBudget: WriteBudget;
 }
 
 const INSTRUCTIONS = `Zugriff auf weclapp (ERP): Artikel, Ausgangsrechnungen, Helpdesk-Tickets mit Kommentaren und Zeitbuchung, Verträge.
@@ -30,9 +33,10 @@ export function createWeclappServer(client: WeclappClient, options: ServerOption
   const notes = [
     INSTRUCTIONS,
     readOnly ? '- Dieser Server ist im Nur-Lesen-Modus.' : '- Jede Schreibaktion wird protokolliert und liefert eine changeId; weclapp_undo_change macht sie rückgängig.',
+    ...(!readOnly && options.writeBudget.max > 0 ? [`- Pro Stunde sind höchstens ${options.writeBudget.max} Schreibaktionen möglich. Ist das Limit erreicht, den Nutzer informieren statt es erneut zu versuchen.`] : []),
   ];
   const server = new McpServer(SERVER_INFO, { capabilities: { tools: {} }, instructions: notes.join('\n') });
-  const context = { server, client, readOnly, allowPublicComments: options.allowPublicComments, audit: options.audit };
+  const context = { server, client, readOnly, allowPublicComments: options.allowPublicComments, audit: options.audit, writeBudget: options.writeBudget };
   registerLookupTools(context);
   registerArticleTools(context);
   registerInvoiceTools(context);
