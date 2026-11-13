@@ -213,3 +213,7 @@ WECLAPP_TENANT=meinefirma WECLAPP_AUDIT_DIR=./audit npm run dev   # HTTP-Server 
 ```
 
 Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit Node; `npm run build` erzeugt `dist/` für Docker und `npx`.
+
+## Lizenz
+
+[MIT](LICENSE)
