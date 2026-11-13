@@ -73,7 +73,7 @@ Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Contain
 **Voraussetzungen:** ein VPS mit Docker, eine (Sub-)Domain wie `mcp.example.com`, deren DNS-Eintrag auf den VPS zeigt, und offene Ports 80 und 443.
 
 ```bash
-git clone <dieses-repo> weclapp-mcp && cd weclapp-mcp
+git clone https://github.com/belsignum/weclapp-mcp.git && cd weclapp-mcp
 cp .env.example .env      # WECLAPP_TENANT und MCP_DOMAIN eintragen
 docker compose up -d --build
 curl https://mcp.example.com/health
