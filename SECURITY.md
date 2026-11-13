@@ -2,7 +2,7 @@
 
 Stand: 13.11.2026, Version 0.2.0, nach zwei Audits. Geprüft wurde der eigene Code dieses Repos: HTTP-Server, weclapp-Client, Tools, Änderungsprotokoll, Docker- und Caddy-Konfiguration.
 
-**Nicht geprüft:** weclapp selbst, der VPS (Firewall, SSH, Updates) und das Verhalten gegen einen echten weclapp-Mandanten. Alle Angriffe liefen gegen einen nachgebauten weclapp-Server.
+**Nicht geprüft:** weclapp selbst und der VPS (Firewall, SSH, Updates). Alle Angriffe liefen gegen einen nachgebauten weclapp-Server. Am echten Mandanten lief nur ein Funktionstest mit einem Artikel, siehe „Am echten Mandanten geprüft“.
 
 ## Schutzmodell in Kurzform
 
@@ -84,9 +84,17 @@ Gebaut wurde das Image aus dem `Dockerfile`, gestartet die `docker-compose.yml` 
 - **Rate-Limit hinter Caddy:** 14 Rateversuche, jeder mit einem anderen gefälschten `X-Forwarded-For`: 10 × `401`, danach `429`, genau 10 Token-Prüfungen bei weclapp. `X-Real-IP` und `Forwarded` ändern daran nichts. Der bestätigte Token arbeitet von derselben Adresse weiter; ein zweiter Client mit eigener Adresse ist nicht gesperrt.
 - **Fremder `Host`-Header:** Caddy beantwortet ihn selbst mit einer leeren Antwort. Der Server bekommt die Anfrage nicht zu sehen.
 
+### Am echten Mandanten geprüft
+
+Ein Funktionstest, kein Angriff: `scripts/smoke-article.ts` startet den Server lokal und legt über die MCP-Tools einen inaktiven Testartikel an.
+
+- **Anmeldung:** Der erste Lauf endete mit `503`. weclapp verpackt die Antwort von `/user/currentUser` in `{ result: … }`, der nachgebaute Server tat das nicht. Der Server hielt deshalb jede Antwort für unbrauchbar und ließ auch gültige Tokens nicht herein. Eine Lücke war das nicht, aber am echten weclapp war der Server so nicht benutzbar. Behoben im weclapp-Client; der nachgebaute Server antwortet jetzt wie das Original.
+- **`dryRun` beim Anlegen eines Artikels:** weclapp prüft die Daten und speichert nichts.
+- **Anlegen, Lesen, Rückgängig:** Der Artikel wurde angelegt, gelesen und über `weclapp_undo_change` wieder gelöscht; danach antwortet weclapp mit `404`. Im Protokoll stehen beide Schritte, der Token nicht.
+
 ### Nicht geprüft
 
-- **Alles, was nur ein echter weclapp-Mandant zeigt:** ob `dryRun` wirklich nichts speichert, ob die Versionsprüfung bei jedem Datentyp greift, welche Ticket-Felder der Kunde zu sehen bekommt und wann weclapp E-Mails verschickt.
+- **Der Rest am echten Mandanten:** Tickets, Zeitbuchungen, Verträge und Rechnungen liefen nur gegen den nachgebauten Server. Offen ist damit, ob `dryRun` auch bei Änderungen nichts speichert, ob die Versionsprüfung bei jedem Datentyp greift, welche Ticket-Felder der Kunde zu sehen bekommt und wann weclapp E-Mails verschickt.
 - **Zertifikat von Let's Encrypt:** Der Docker-Aufbau lief lokal mit Caddys interner Zertifizierungsstelle. Ob Caddy mit schreibgeschütztem Dateisystem auch ein echtes Zertifikat abruft und erneuert, zeigt erst der VPS. Zertifikate liegen in `/data`; dieses Volume bleibt beschreibbar.
 
 ## Verbleibende Risiken

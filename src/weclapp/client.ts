@@ -190,12 +190,17 @@ export class WeclappClient {
     return this.request<void>('DELETE', entityPath(entity, id));
   }
 
-  /** Der weclapp-Nutzer, dem der Token gehört (pro Client-Instanz gecacht). */
+  /**
+   * Der weclapp-Nutzer, dem der Token gehört (pro Client-Instanz gecacht).
+   * Anders als bei /<datentyp>/id/<id> verpackt weclapp diese Antwort in { result: … }.
+   */
   currentUser(): Promise<Entity> {
-    this.#currentUser ??= this.request<Entity>('GET', '/user/currentUser').catch((error: unknown) => {
-      this.#currentUser = undefined;
-      throw error;
-    });
+    this.#currentUser ??= this.request<{ result: Entity }>('GET', '/user/currentUser')
+      .then((response) => response.result)
+      .catch((error: unknown) => {
+        this.#currentUser = undefined;
+        throw error;
+      });
     return this.#currentUser;
   }
 }

@@ -73,7 +73,8 @@ export async function startMockWeclapp() {
     };
 
     if (!token || !VALID_TOKENS.has(token)) return send(401, { title: 'Unauthorized', status: 401 });
-    if (path === '/user/currentUser') return send(200, USERS[token]);
+    // wie das echte weclapp: der Nutzer steckt in { result: … } (am Mandanten nachgesehen)
+    if (path === '/user/currentUser') return send(200, { result: USERS[token] });
 
     const single = path.match(/^\/(\w+)\/id\/([^/]+)$/);
     const list = path.match(/^\/(\w+)$/);

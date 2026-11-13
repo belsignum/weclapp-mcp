@@ -214,6 +214,14 @@ WECLAPP_TENANT=meinefirma WECLAPP_AUDIT_DIR=./audit npm run dev   # HTTP-Server 
 
 Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit Node; `npm run build` erzeugt `dist/` für Docker und `npx`.
 
+### Rauchtest am echten Mandanten
+
+```bash
+node scripts/smoke-article.ts
+```
+
+Das Skript fragt Mandant und Token ab (den Token verdeckt), startet den Server lokal und legt über die MCP-Tools einen inaktiven Testartikel an: erst als Probelauf, dann nach Rückfrage wirklich. Auf Wunsch löscht es ihn über `weclapp_undo_change` wieder. Das Protokoll landet in `./audit`.
+
 ## Lizenz
 
 [MIT](LICENSE)
