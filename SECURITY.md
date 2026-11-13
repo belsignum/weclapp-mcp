@@ -117,4 +117,4 @@ Gebaut wurde das Image aus dem `Dockerfile`, gestartet die `docker-compose.yml` 
 
 ## Schwachstelle melden
 
-Bitte nicht als öffentliches Issue, sondern direkt an den Betreiber dieses Repos.
+Bitte nicht als öffentliches Issue, sondern vertraulich über GitHub: im Repo unter **Security** → **Report a vulnerability** ([direkt zum Formular](https://github.com/belsignum/weclapp-mcp/security/advisories/new)). Die Meldung sehen nur die Betreiber dieses Repos.
