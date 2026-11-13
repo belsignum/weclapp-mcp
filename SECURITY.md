@@ -40,7 +40,7 @@ Geprüft und ohne Befund:
 
 ## Zweites Audit vom 13.11.2026
 
-Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst ohne Kenntnis des ersten Berichts gelesen, danach wurde jeder Punkt des ersten Audits gegengeprüft. Jeder Befund wurde am laufenden Server gegen den nachgebauten weclapp-Server nachgewiesen, dann behoben und mit einem Test abgesichert, der auf dem alten Stand fehlschlägt (`test/security.test.ts`, `test/audit.test.ts`, `test/limits.test.ts`).
+Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst ohne Kenntnis des ersten Berichts gelesen, danach wurde jeder Punkt des ersten Audits gegengeprüft. Jeder Befund wurde am laufenden Server gegen den nachgebauten weclapp-Server nachgewiesen, dann behoben und mit einem Test abgesichert, der auf dem alten Stand fehlschlägt (`test/security.test.ts`, `test/audit.test.ts`, `test/limits.test.ts`, `test/deploy.test.ts`).
 
 | # | Befund | Nachweis | Schwere | Status |
 |---|---|---|---|---|
@@ -53,6 +53,7 @@ Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst 
 | 17 | **Datumsangaben wurden falsch statt gar nicht gelesen.** `Date.parse` nimmt fast alles: `01.12.2026` wurde zum 12. Januar 2026, `Ticket 5` zum Mai 2001, der 31. Februar zum 3. März. Solche Werte landeten ohne Fehlermeldung in Vertragsenden, Fälligkeiten und Zeitbuchungen. | `toEpochMs("01.12.2026")` ergibt den 12.01.2026. | mittel (Datenintegrität) | behoben: nur noch ISO-8601 und Epoch-Millisekunden, mit Prüfung des Kalendertags |
 | 18 | **Dieselbe Änderung ließ sich mehrfach gleichzeitig zurücksetzen.** Geschützt hat allein die Versionsprüfung von weclapp. Wo sie nicht greift, liefen parallele Undo-Aufrufe alle durch. | 3 parallele `weclapp_undo_change` auf eine Zeitbuchung ohne `version`: 3 Schreibzugriffe, 3 Protokolleinträge. | niedrig | behoben: pro Änderung läuft nur ein Rückgängig-Vorgang |
 | 19 | **Kleinere Härtungen.** (a) Mit `MCP_TRUST_PROXY` wurde jeder beliebige Text aus `X-Forwarded-For` als Schlüssel fürs Rate-Limit übernommen. (b) Bereits vorhandene Protokolldateien behielten zu offene Rechte (`0644`). (c) Protokollzeilen mit unerwarteten Typen wurden ungeprüft fürs Rückgängigmachen verwendet, und eine zweite `begin`-Zeile mit derselben ID konnte einen Eintrag einem anderen Nutzer zuschlagen. (d) `GET //` führte zu `500`. (e) Schlug nach einem erfolgreichen Undo nur der Vermerk im Protokoll fehl, meldete das Tool einen Fehler. | (a) bis (d) einzeln nachgestellt, (e) aus dem Code abgeleitet | niedrig | behoben: (a) nur gültige IP-Adressen, sonst die Adresse der Verbindung; (b) `0600` beim Start; (c) Typprüfung, die erste Zeile zu einer ID gilt; (d) `400`; (e) Erfolg mit Warnung |
+| 20 | **Caddy-Container lief uneingeschränkt.** Anders als der Server-Container hatte er ein beschreibbares Dateisystem und weder Speicher- noch Prozesslimit. Dabei ist Caddy der einzige Container, der aus dem Internet erreichbar ist. | `docker inspect` am laufenden Compose-Aufbau: `ReadonlyRootfs=false`, `Memory=0`, kein `PidsLimit`. | niedrig | behoben: `read_only`, `pids_limit: 200`, `mem_limit: 256m`; beschreibbar sind nur die Volumes für Zertifikate und Caddys Konfiguration. Im Compose-Aufbau geprüft: TLS und Weiterleitung laufen, Speicherbedarf im Leerlauf 15 MB |
 
 ### Gegenprüfung des ersten Audits
 
@@ -60,7 +61,7 @@ Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst 
 - **Befunde 1, 3, 4, 5, 7, 9** halten: Code gelesen, die Angriffstests des ersten Audits laufen weiter. Zusätzlich versucht: Pfade wie `//`, `/mcp/`, `/health/../mcp` und eine absolute URL in der Request-Zeile sowie `fields` in `weclapp_book_time` mit `id`, `version`, fremdem Nutzer und fremdem Ticket.
 - **Befund 6 (öffentliche Kommentare)** hält: `visibility` in anderer Schreibweise, zusätzliche Argumente wie `publicComment: true` und der Weg über `fields` anderer Tools führen nicht zu einem öffentlichen Kommentar.
 - **Befund 8 (Request-Größe)** hält, auch ohne `Content-Length` (chunked). Der zugehörige Test war allerdings vom Timing abhängig und schlug fehl, wenn die Testdatei allein lief; er ist jetzt deterministisch.
-- **Befund 10 (Container)** konnte nur gelesen, nicht gebaut werden: Docker Hub war nicht erreichbar.
+- **Befund 10 (Container)** hält für den Server-Container, siehe „Docker-Aufbau“. Für den Caddy-Container war er unvollständig: siehe 20.
 
 ### Geprüft und ohne Befund
 
@@ -74,11 +75,19 @@ Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst 
 - **Lieferkette:** `npm audit` meldet 0 Schwachstellen; alle 40 Pakete im Lockfile stammen von registry.npmjs.org, haben eine Prüfsumme und keine Installationsskripte.
 - **Fehlermeldungen:** enthalten keinen Token.
 
+### Docker-Aufbau
+
+Gebaut wurde das Image aus dem `Dockerfile`, gestartet die `docker-compose.yml` dieses Repos mit Caddy. Nur für den Test ersetzt: weclapp durch den nachgebauten Server (im Netzwerk des Server-Containers) und die Ports auf dem Testrechner. Das Zertifikat für `mcp.localhost` kam aus Caddys interner Zertifizierungsstelle.
+
+- **Server-Container:** läuft als Nutzer `node` ohne Capabilities und mit `no-new-privileges`. Das Dateisystem ist schreibgeschützt, auch `/tmp` und das Home-Verzeichnis; beschreibbar ist nur `/data`. Die Protokolldatei entsteht mit `0600` in einem Verzeichnis mit `0700`. Port 3000 ist vom Host aus nicht erreichbar.
+- **Über Caddy:** `/health` antwortet mit den Sicherheits-Headern, andere Pfade mit `404`, `/mcp` ohne Token mit `401` und mit fremdem `Origin` mit `403`. Mit Token: Tool-Liste und eine protokollierte Zeitbuchung. Ein Request mit 1,1 MB endet mit `413`.
+- **Rate-Limit hinter Caddy:** 14 Rateversuche, jeder mit einem anderen gefälschten `X-Forwarded-For`: 10 × `401`, danach `429`, genau 10 Token-Prüfungen bei weclapp. `X-Real-IP` und `Forwarded` ändern daran nichts. Der bestätigte Token arbeitet von derselben Adresse weiter; ein zweiter Client mit eigener Adresse ist nicht gesperrt.
+- **Fremder `Host`-Header:** Caddy beantwortet ihn selbst mit einer leeren Antwort. Der Server bekommt die Anfrage nicht zu sehen.
+
 ### Nicht geprüft
 
 - **Alles, was nur ein echter weclapp-Mandant zeigt:** ob `dryRun` wirklich nichts speichert, ob die Versionsprüfung bei jedem Datentyp greift, welche Ticket-Felder der Kunde zu sehen bekommt und wann weclapp E-Mails verschickt.
-- **Docker-Image und Laufzeit-Härtung:** Der Build brach beim Laden des Basis-Images mit einem Timeout ab. `docker compose config` und `npm run build` laufen.
-- **Caddy:** Dass Caddy ein vom Client mitgeschicktes `X-Forwarded-For` verwirft, ist laut Dokumentation das Standardverhalten, wurde aber nicht nachgestellt. Der Server verlässt sich nicht darauf: Er wertet nur den letzten Eintrag aus.
+- **Zertifikat von Let's Encrypt:** Der Docker-Aufbau lief lokal mit Caddys interner Zertifizierungsstelle. Ob Caddy mit schreibgeschütztem Dateisystem auch ein echtes Zertifikat abruft und erneuert, zeigt erst der VPS. Zertifikate liegen in `/data`; dieses Volume bleibt beschreibbar.
 
 ## Verbleibende Risiken
 
@@ -95,7 +104,7 @@ Unabhängige Nachprüfung mit dem Blick eines Angreifers. Der Code wurde zuerst 
 - **Ein volles Protokoll sperrt das Schreiben.** Das ist Absicht (ohne Protokoll keine Änderung), braucht dann aber einen Eingriff: `WECLAPP_AUDIT_MAX_MB` erhöhen oder alte Monatsdateien sichern und entfernen. Bei normaler Nutzung sind 100 MB in der Aufbewahrungsfrist nicht zu erreichen.
 - **Das Protokoll ist manipulierbar, wenn der VPS kompromittiert ist.** Es ist ein Arbeitsprotokoll mit Undo, kein revisionssicheres Archiv.
 - **Statusänderungen an Tickets** können je nach weclapp-Einstellung E-Mails an Kunden auslösen. Das steuert weclapp, nicht dieser Server.
-- **Basis-Images** sind per Tag (`node:24-alpine`, `caddy:2-alpine`) und nicht per Digest festgelegt. Der Caddy-Container hat kein Speicherlimit und kein schreibgeschütztes Dateisystem; beides ließ sich ohne lauffähigen Build nicht testen und blieb deshalb unverändert.
+- **Basis-Images** sind per Tag (`node:24-alpine`, `caddy:2-alpine`) und nicht per Digest festgelegt.
 
 ## Empfehlungen für den Betrieb
 
