@@ -81,6 +81,8 @@ export function createHttpServer(options: HttpOptions) {
   async function handle(req: AuthedRequest, res: ServerResponse): Promise<void> {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Cache-Control', 'no-store');
+    // Ein vorgeschaltetes NGINX soll Antworten (auch SSE) nicht puffern, ohne dass man dort etwas einstellen muss
+    res.setHeader('X-Accel-Buffering', 'no');
     let url: URL;
     try {
       url = new URL(req.url ?? '/', 'http://localhost');

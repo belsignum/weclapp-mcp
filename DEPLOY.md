@@ -1,0 +1,270 @@
+# Betrieb hinter dem NGINX einer Hosting-Verwaltungsoberfläche
+
+Diese Anleitung gilt, wenn auf deinem Server schon ein NGINX läuft, das TLS übernimmt und eine (Sub-)Domain an einen lokalen Port weiterleitet. Viele Hosting-Panels bieten das pro Domain als Option „NGINX als (SSL) Proxy → App-Server auf Port …“ an. Caddy aus der `docker-compose.yml` brauchst du dann nicht. Stattdessen nimmst du `docker-compose.nginx.yml`.
+
+```
+Client (Claude Code, Claude Desktop, Cursor)
+   │  HTTPS, Authorization: Bearer <weclapp-Token>
+   ▼
+NGINX des Panels (TLS-Zertifikat, Domain)
+   │  HTTP auf 127.0.0.1:<Port>
+   ▼
+Container weclapp-mcp (lauscht nur auf 127.0.0.1)
+   │  HTTPS
+   ▼
+<mandant>.weclapp.com
+```
+
+Im Folgenden steht `mcp.example.com` für deine Domain und `8734` für den Port, den dein Panel anzeigt. Setze überall deine eigenen Werte ein.
+
+## 0. Vorher klären: AGB und Freigabe des Hosters
+
+Lies die AGB deines Hosters, bevor du etwas einrichtest. Viele schränken ein:
+
+- **Dauerhaft laufende Prozesse** („Daemons“) und eigene Software. Ein Container, der ständig läuft, fällt unter diesen Begriff, auch wenn das Panel eine Option für App-Server anbietet.
+- **Änderungen an der Webserver-Konfiguration**: oft nur über die Funktionen des Panels erlaubt, alles Weitere nur nach Absprache.
+- **Automatisierte Zugriffe und KI:** Manche Hoster verbieten, Panel und Kundenbereich mit Skripten oder KI-Agenten zu bedienen. Andere verbieten, Zugangsdaten, interne URLs oder Konfigurationsdaten an externe KI-Dienste weiterzugeben. Bediene Panel und Server dann selbst, und füge solche Daten nicht in einen KI-Chat ein. Diese Anleitung ist so aufgebaut, dass du jedes Ergebnis selbst auswerten kannst.
+- **Backups:** häufig verlangt, dass Sicherungskopien nicht auf dem Server selbst liegen (siehe Schritt 9).
+
+Ist etwas unklar, frag beim Support nach und lass dir die Antwort schriftlich geben, bevor du den Container startest. Diese Fragen helfen:
+
+1. Darf auf meinem Server ein Docker-Container dauerhaft laufen, der über die Panel-Option „Proxy auf App-Server/Port“ erreichbar ist? Es geht um einen kleinen Node.js-Dienst für mich allein: ein MCP-Server, der für KI-Clients auf die weclapp-API zugreift, mit höchstens 1 CPU und 512 MB RAM.
+2. Wie stellt ihr Docker bereit: `docker` und `docker compose` per SSH (rootless oder mit Gruppe `docker`), oder nur über das Panel? Darf ich Images aus einem Dockerfile selbst bauen?
+3. Startet mein Container nach einem Neustart des Servers wieder von selbst (bei rootless Docker: ist „linger“ für meinen Nutzer aktiv)?
+4. Darf der Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? Für den Build kommen Docker Hub und die npm-Registry dazu.
+5. Darf ich im Experten-Setup des Proxys eigene NGINX-Anweisungen eintragen (Header, Pufferung), falls das nötig wird?
+
+## 1. Voraussetzungen auf dem Server prüfen
+
+Per SSH auf dem Server:
+
+```bash
+docker version
+docker compose version
+docker info --format '{{.SecurityOptions}}'
+```
+
+- Beide Versionen erscheinen: passt. Enthält die letzte Ausgabe `rootless`, läuft Docker in deinem Nutzerkonto. Das ist für diesen Aufbau in Ordnung.
+- `docker compose` fehlt oder es gibt `permission denied`: Wende dich an den Hoster. Installiere Docker nicht selbst an ihm vorbei.
+- Docker gibt es nur über das Panel und nicht per SSH: Dann passt diese Anleitung nicht direkt. Das Panel braucht in dem Fall meist ein fertiges Image aus einer Registry.
+
+Lege das Repo **außerhalb** des Web-Verzeichnisses der Domain ab, also nicht unter `htdocs`, `httpdocs` oder `public_html`.
+
+## 2. Panel einstellen
+
+Für die (Sub-)Domain, unter der der Server erreichbar sein soll:
+
+1. **Domain anlegen**, falls es sie noch nicht gibt, und den DNS-Eintrag auf den Server zeigen lassen.
+2. **Webserver:** die Option „NGINX als (SSL) Proxy → App-Server auf Port …“ wählen. Den angezeigten Port (hier `8734`) notierst du für `.env`. Das Panel erwartet die Anwendung auf `127.0.0.1:<Port>`, genau das macht `docker-compose.nginx.yml`.
+3. **SSL-Zertifikat** einschalten, z. B. Let's Encrypt (oft im Reiter „Domain“). Wenn es angeboten wird, „HTTPS erzwingen“ und HSTS einschalten. Der weclapp-Token steht in jedem Request und darf nie unverschlüsselt übertragen werden.
+4. **NGINX-Cache für diese Domain ausschalten.** Antworten von `/mcp` enthalten Daten aus deinem weclapp und dürfen nie zwischengespeichert werden. Der Server sendet zwar `Cache-Control: no-store` bzw. `no-cache`, und NGINX speichert POST-Anfragen standardmäßig nicht. Verlass dich trotzdem nicht darauf, sondern schalte den Cache aus.
+5. **Webserver-Logfile:** Das übliche Access-Log von NGINX enthält IP-Adresse, Zeit, Pfad, Status und User-Agent, aber **nicht** den `Authorization`-Header mit dem Token. Für den normalen Betrieb trotzdem ausschalten (weniger personenbezogene Daten) und nur bei der Fehlersuche vorübergehend einschalten. Erlaubt das Panel ein eigenes Logformat, darf `$http_authorization` darin nie vorkommen.
+
+Ein **Experten-Setup** mit eigenen NGINX-Anweisungen brauchst du normalerweise nicht. Ob doch, zeigt Schritt 4.
+
+## 3. Repo holen und `.env` anlegen
+
+```bash
+git clone https://github.com/belsignum/weclapp-mcp.git ~/weclapp-mcp
+```
+
+```bash
+cd ~/weclapp-mcp && cp .env.example .env && chmod 600 .env
+```
+
+In `.env` (z. B. mit `nano .env`) eintragen bzw. die Zeilen einkommentieren:
+
+```ini
+WECLAPP_TENANT=meinefirma
+MCP_DOMAIN=mcp.example.com
+COMPOSE_FILE=docker-compose.nginx.yml
+MCP_PORT=8734
+MCP_TRUST_PROXY=false
+```
+
+`COMPOSE_FILE` sorgt dafür, dass jedes `docker compose …` in diesem Ordner die NGINX-Variante nimmt und nie versehentlich Caddy startet. Der weclapp-Token gehört **nicht** in die `.env`: Der Server speichert keinen Token, jeder Client schickt seinen eigenen mit.
+
+## 4. Einmalig prüfen, welche Header das Panel-NGINX schickt
+
+Davon hängen zwei Einstellungen ab: der Host-Check und `MCP_TRUST_PROXY`. Statt zu raten, schaust du nach. Der Port muss dafür noch frei sein, also vor Schritt 5.
+
+**Terminal 1, per SSH auf dem Server:** ein Wegwerf-Container, der nur Host und `X-Forwarded-For` jeder Anfrage anzeigt:
+
+```bash
+docker run --rm --init --name weclapp-header-test --read-only --cap-drop ALL --security-opt no-new-privileges --user node -p 127.0.0.1:8734:8080 node:24-alpine node -e "require('http').createServer((q,s)=>{const h=q.headers;console.log(JSON.stringify({host:h.host,'x-forwarded-for':h['x-forwarded-for']??'(fehlt)'}));s.end('ok\n')}).listen(8080)"
+```
+
+**Terminal 2, auf deinem eigenen Rechner:** eine Anfrage mit absichtlich gefälschter Absenderadresse:
+
+```bash
+curl -s -H 'X-Forwarded-For: 203.0.113.99' https://mcp.example.com/header-test
+```
+
+Antwortet `curl` mit `ok`, steht in Terminal 1 eine Zeile wie `{"host":"…","x-forwarded-for":"…"}`. Danach Terminal 1 mit Strg+C beenden.
+
+**`host` auswerten:**
+
+| Ausgabe `host` | Bedeutung | Was tun |
+|---|---|---|
+| `mcp.example.com` | NGINX reicht die Domain durch | nichts, `MCP_DOMAIN` passt |
+| `127.0.0.1:8734` oder `localhost:8734` | NGINX-Standard | nichts, diese Hosts sind immer erlaubt |
+| etwas anderes | ungewöhnlich | den Namen ohne Port zusätzlich eintragen: `MCP_DOMAIN=mcp.example.com,anderer-name` |
+
+Den Host-Check schaltest du dabei nicht ab. Er lehnt weiterhin jeden Host ab, der nicht in der Liste steht.
+
+**`x-forwarded-for` auswerten:**
+
+| Ausgabe `x-forwarded-for` | Bedeutung | `MCP_TRUST_PROXY` |
+|---|---|---|
+| `(fehlt)` | NGINX setzt den Header nicht | `false` |
+| genau `203.0.113.99` | NGINX reicht den Header des Clients ungeprüft durch | **`false`**, `true` wäre hier gefährlich |
+| `203.0.113.99, <andere Adresse>` | NGINX hängt die echte Adresse an | `true` |
+| nur `<andere Adresse>` | NGINX überschreibt den Header mit der echten Adresse | `true` |
+
+Warum das wichtig ist: Mit `MCP_TRUST_PROXY=true` nimmt der Server den **letzten** Eintrag aus `X-Forwarded-For` als Absender. Reicht NGINX den Header unverändert durch, bestimmt den letzten Eintrag der Client. Ein Angreifer könnte dann für jeden Rateversuch eine neue Adresse erfinden und das Rate-Limit umgehen.
+
+**Was `MCP_TRUST_PROXY=false` bedeutet:** Der Server sieht dann für alle Anfragen dieselbe Adresse, nämlich die des NGINX bzw. des Docker-Netzes. Das Rate-Limit greift weiterhin, aber für alle gemeinsam:
+
+- Nach 10 fehlgeschlagenen Anmeldungen innerhalb von 5 Minuten werden **alle noch unbekannten Tokens** abgewiesen (`429`), von jedem Gerät aus, bis die 5 Minuten um sind.
+- Ein Token, den weclapp in den letzten 24 Stunden bestätigt hat, arbeitet ungestört weiter. Im Alltag merkst du also nichts.
+- Spürbar wird es nur, wenn jemand gerade Tokens rät **und** du in dieser Zeit ein neues Gerät verbindest oder der Container frisch gestartet wurde. Dann wartest du bis zu 5 Minuten.
+- Der Schutz gegen Token-Raten wird dadurch nicht schwächer, eher strenger: Insgesamt sind nur 10 Fehlversuche pro 5 Minuten möglich.
+
+Für einen Server, den nur du nutzt, ist `false` deshalb ein vertretbarer Kompromiss. `true` setzt du nur, wenn die Tabelle es ausdrücklich erlaubt.
+
+Willst du `true`, obwohl NGINX den Header nicht setzt: Nur wenn das Panel ein Experten-Setup anbietet **und** der Hoster eigene Anweisungen dort erlaubt (Schritt 0), kannst du dafür die Option „Proxy auf Adresse“ mit `http://127.0.0.1:8734` wählen und dort eintragen:
+
+```nginx
+proxy_set_header Host $host;
+proxy_set_header X-Forwarded-For $remote_addr;
+proxy_set_header X-Forwarded-Proto $scheme;
+proxy_buffering off;
+proxy_read_timeout 75s;
+client_max_body_size 1m;
+```
+
+Danach Schritt 4 wiederholen. Erst wenn die Tabelle `true` erlaubt, die Einstellung umstellen.
+
+## 5. Container starten
+
+```bash
+cd ~/weclapp-mcp && docker compose up -d --build
+```
+
+Der erste Build dauert ein bis zwei Minuten (`npm ci`, TypeScript). Danach:
+
+```bash
+docker compose ps
+```
+
+```bash
+docker compose logs --tail 20
+```
+
+Erwartet: Status `healthy` und eine Zeile `[weclapp-mcp] … hört auf http://0.0.0.0:3000/mcp (Mandant: meinefirma.weclapp.com, Schreiben mit Protokoll in /data/audit)`. Im Container ist das Port 3000. Von außen erreichbar ist er nur über `127.0.0.1:8734`.
+
+Warnungen wie `Your kernel does not support … limit` bei rootless Docker heißen: CPU- oder Speicherlimit greifen nicht. Der Server läuft trotzdem. Sag dem Hoster Bescheid, wenn ihm die Limits wichtig sind.
+
+## 6. Von außen prüfen
+
+Auf deinem eigenen Rechner:
+
+```bash
+curl -s https://mcp.example.com/health
+```
+
+Erwartet: `{"status":"ok"}`.
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' -X POST https://mcp.example.com/mcp
+```
+
+Erwartet: `401` (ohne Token kein Zugang).
+
+```bash
+curl -s -m 5 -o /dev/null -w '%{http_code}\n' http://mcp.example.com:8734/health
+```
+
+Erwartet: `000` (keine Verbindung). Der Port ist von außen nicht erreichbar.
+
+Mit Token: Lies ihn verdeckt ein, damit er nicht in der Shell-History landet. Führe das nur auf deinem Rechner aus, nie auf dem Server:
+
+```bash
+printf 'weclapp-Token: ' && read -rs WECLAPP_TOKEN && echo && curl -s -H "Authorization: Bearer $WECLAPP_TOKEN" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}' https://mcp.example.com/mcp; unset WECLAPP_TOKEN
+```
+
+Erwartet: eine Zeile `data: {"result":{…"serverInfo":{"name":"weclapp-mcp",…}}}`.
+
+## 7. Clients verbinden
+
+Auf jedem Gerät brauchst du die URL `https://mcp.example.com/mcp` und deinen weclapp-Token. Die Konfiguration für Claude Code, Claude Desktop (über `mcp-remote`) und Cursor steht in der [README](README.md#clients-verbinden). Ersetze dort nur die URL.
+
+## 8. Betrieb
+
+**Updates einspielen:**
+
+```bash
+cd ~/weclapp-mcp && git pull && docker compose build --pull && docker compose up -d
+```
+
+**Logs ansehen** (Start- und Fehlermeldungen, nie der Token; Docker behält höchstens 3 × 1 MB):
+
+```bash
+cd ~/weclapp-mcp && docker compose logs --tail 50
+```
+
+**Änderungsprotokoll ansehen:**
+
+```bash
+cd ~/weclapp-mcp && docker compose exec weclapp-mcp sh -c 'cat /data/audit/*.jsonl' | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
+```
+
+**Nach einem Neustart des Servers** startet Docker den Container wieder (`restart: unless-stopped`). Bei rootless Docker gilt das nur, wenn der Docker-Dienst deines Nutzers ohne Anmeldung startet. Das klärt Frage 3 aus Schritt 0.
+
+**Rate-Limit, Schreiblimit und die Liste bestätigter Tokens** liegen im Arbeitsspeicher. Nach einem Neustart des Containers sind sie leer.
+
+## 9. Backup des Änderungsprotokolls
+
+Das Protokoll liegt im Docker-Volume `weclapp-mcp_audit_data`. Sichere es **direkt auf deinen eigenen Rechner**, ohne Zwischenkopie auf dem Server. Viele Hoster-AGB verlangen das, und ein Backup auf demselben Server hilft bei einem Ausfall nicht.
+
+Auf deinem Rechner (`benutzer@server` durch deinen SSH-Zugang ersetzen):
+
+```bash
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose exec -T weclapp-mcp tar -C /data -cf - audit' > weclapp-audit-$(date +%F).tar
+```
+
+Zurückspielen (der Dienst ist dabei kurz gestoppt):
+
+```bash
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose stop weclapp-mcp && docker compose run --rm --no-deps -T weclapp-mcp tar -C /data -xf - && docker compose start weclapp-mcp' < weclapp-audit-JJJJ-MM-TT.tar
+```
+
+Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. Bewahre sie trotzdem wie andere Geschäftsdaten auf.
+
+## 10. Fehlersuche
+
+| Symptom | Ursache und Abhilfe |
+|---|---|
+| `502 Bad Gateway` | Der Container läuft nicht oder hört auf einem anderen Port. Auf dem Server: `docker compose ps`, dann `curl -s http://127.0.0.1:8734/health`. `MCP_PORT` muss dem Port im Panel entsprechen. |
+| `403` mit `Invalid Host` | Das NGINX schickt einen Host, der nicht erlaubt ist. Schritt 4 (Tabelle `host`). |
+| `403` mit `Invalid Origin` | Ein Browser oder Client schickt einen fremden `Origin`. Das ist der Schutz gegen DNS-Rebinding. Normale MCP-Clients schicken keinen `Origin`. |
+| `401` | Kein oder ungültiger Token. Den Token in weclapp prüfen bzw. neu anlegen. |
+| `429` | Zu viele Fehlversuche (Schritt 4, „Was `MCP_TRUST_PROXY=false` bedeutet“). Bis zu 5 Minuten warten. |
+| `503` | weclapp war nicht erreichbar. Sind ausgehende HTTPS-Verbindungen vom Server erlaubt (Schritt 0, Frage 4)? |
+| `413` | Request größer als 1 MB. NGINX und Server haben dieselbe Grenze. |
+| Antwort bricht nach etwa 60 s ab | Server und NGINX begrenzen einen Request auf rund 60 s. weclapp-Abfragen sind normalerweise viel schneller. |
+| `port is already allocated` | Ein anderer Prozess nutzt den Port, z. B. ein vergessener Header-Test: `docker stop weclapp-header-test`. |
+
+## Was getestet ist
+
+Lokal mit Docker getestet: `docker-compose.nginx.yml`, dahinter ein nachgebauter weclapp-Server, davor zwei NGINX. Der eine verhält sich wie ein Panel-Proxy mit NGINX-Standardeinstellungen (`Host: 127.0.0.1:<Port>`, kein `X-Forwarded-For`), der andere nutzt das Experten-Setup oben.
+
+- In beiden Fällen: `/health` antwortet mit `200`, `/mcp` ohne Token mit `401`, mit fremdem `Origin` mit `403`. Mit Token liefert der Server die Tool-Liste. Bei 1,1 MB antwortet er mit `413`.
+- Rate-Limit mit `false`: 10 × `401`, danach `429`. Der bestätigte Token arbeitet weiter. Ein neuer Token von einer anderen gefälschten Adresse ist gesperrt, wie oben beschrieben.
+- Gegenprobe: NGINX-Standard mit `MCP_TRUST_PROXY=true`. Gefälschte Adressen umgehen das Rate-Limit vollständig (14 × `401`, nie `429`). Deshalb ist `false` voreingestellt und Schritt 4 nötig.
+- Experten-Setup mit `true`: Gefälschte Adressen helfen nicht, nach 10 Versuchen kommt `429`.
+- Der Header-Test aus Schritt 4 zeigt die drei typischen NGINX-Varianten (durchreichen, anhängen, überschreiben) so, wie die Tabelle sie beschreibt.
+- SSE-Ereignisse kamen auch durch einen NGINX mit Standard-Pufferung ohne Verzögerung an. Der Server sendet zusätzlich `X-Accel-Buffering: no`, damit NGINX auch bei strengerer Pufferung nichts zurückhält.
+- Container: schreibgeschütztes Dateisystem, keine Capabilities, Nutzer `node`, 1 CPU, 512 MB, 200 Prozesse, Log auf 3 × 1 MB begrenzt, Port nur auf `127.0.0.1`. Backup und Restore aus Schritt 9 funktionieren, die Dateirechte (`0600`) bleiben erhalten.
+
+Erst auf deinem Server prüfbar: was das Panel-NGINX tatsächlich schickt (Schritt 4), das Let's-Encrypt-Zertifikat, Docker ohne root (Limits, Neustart nach Reboot) und ausgehende Verbindungen zu weclapp.

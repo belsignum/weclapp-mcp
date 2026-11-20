@@ -107,7 +107,7 @@ Ein Funktionstest, kein Angriff: `scripts/smoke-article.ts` startet den Server l
 - **Wer den Token hat, hat den Zugriff.** Der Token liegt in der Client-Konfiguration jedes Geräts. Bei Verlust eines Geräts den Token in weclapp löschen; spätestens 5 Minuten später ist er auch hier wertlos.
 - **Aussperren ist nur noch im Ausnahmefall möglich:** Nach einem Neustart des Containers ist kein Token „bekannt“. Laufen genau dann von derselben Adresse 10 Fehlversuche auf, wartet auch der richtige Token bis zu 5 Minuten.
 - **Verteiltes Raten** über sehr viele Adressen wird nicht global begrenzt. Eine globale Sperre könnte jeder auslösen und damit den einzigen Nutzer aussperren. Ein weclapp-Token ist eine zufällige UUID; Raten ist aussichtslos, es kostet nur Anfragen.
-- **`MCP_TRUST_PROXY` gehört nur hinter einen eigenen Proxy.** Ist der Port des Containers zusätzlich direkt erreichbar, kann jeder die Absenderadresse fälschen, das Rate-Limit umgehen und fremde Adressen sperren. Die mitgelieferte Compose-Datei veröffentlicht den Port nicht.
+- **`MCP_TRUST_PROXY` gehört nur hinter einen eigenen Proxy.** Ist der Port des Containers zusätzlich direkt erreichbar, kann jeder die Absenderadresse fälschen, das Rate-Limit umgehen und fremde Adressen sperren. Die mitgelieferte Compose-Datei veröffentlicht den Port nicht. `docker-compose.nginx.yml` veröffentlicht ihn nur auf `127.0.0.1` und setzt `MCP_TRUST_PROXY=false` als Voreinstellung. `true` ist dort nur richtig, wenn das vorgeschaltete NGINX `X-Forwarded-For` selbst setzt oder ergänzt (DEPLOY.md, Schritt 4). Reicht es den Header des Clients durch, umgehen gefälschte Adressen das Rate-Limit vollständig; im lokalen Test nachgestellt.
 - **Rate-Limit, Schreiblimit und Cache liegen im Arbeitsspeicher** und gelten pro Container. Nach einem Neustart sind sie leer.
 - **Ein volles Protokoll sperrt das Schreiben.** Das ist Absicht (ohne Protokoll keine Änderung), braucht dann aber einen Eingriff: `WECLAPP_AUDIT_MAX_MB` erhöhen oder alte Monatsdateien sichern und entfernen. Bei normaler Nutzung sind 100 MB in der Aufbewahrungsfrist nicht zu erreichen.
 - **Das Protokoll ist manipulierbar, wenn der VPS kompromittiert ist.** Es ist ein Arbeitsprotokoll mit Undo, kein revisionssicheres Archiv.
@@ -117,7 +117,7 @@ Ein Funktionstest, kein Angriff: `scripts/smoke-article.ts` startet den Server l
 ## Empfehlungen für den Betrieb
 
 - Einen eigenen weclapp-Nutzer mit genau den nötigen Rechten für den Token verwenden.
-- Den Server nur über Caddy erreichbar machen; Port 3000 nie zusätzlich veröffentlichen.
+- Den Server nur über Caddy oder ein NGINX auf demselben Server erreichbar machen; Port 3000 nie zusätzlich veröffentlichen, in der NGINX-Variante nur auf `127.0.0.1`.
 - Vor größeren geplanten Sammeländerungen `WECLAPP_MAX_WRITES_PER_HOUR` vorübergehend erhöhen, danach zurücksetzen.
 - Auf dem VPS nur die Ports 80, 443 und SSH öffnen; SSH nur mit Schlüssel.
 - Das Volume `audit_data` in die Backups aufnehmen.

@@ -1,0 +1,50 @@
+# Betrieb hinter einem vorhandenen NGINX, das TLS übernimmt und an einen lokalen Port weiterleitet,
+# z. B. dem NGINX einer Hosting-Verwaltungsoberfläche ("Proxy auf App-Server/Port"). Ohne Caddy.
+# Anleitung: DEPLOY.md
+#   cp .env.example .env   # Werte eintragen, COMPOSE_FILE=docker-compose.nginx.yml setzen
+#   docker compose up -d --build
+
+name: weclapp-mcp
+
+services:
+  weclapp-mcp:
+    build: .
+    restart: unless-stopped
+    environment:
+      WECLAPP_TENANT: ${WECLAPP_TENANT:?WECLAPP_TENANT in .env setzen}
+      WECLAPP_READ_ONLY: ${WECLAPP_READ_ONLY:-false}
+      WECLAPP_ALLOW_PUBLIC_COMMENTS: ${WECLAPP_ALLOW_PUBLIC_COMMENTS:-false}
+      WECLAPP_AUDIT_RETENTION_DAYS: ${WECLAPP_AUDIT_RETENTION_DAYS:-365}
+      WECLAPP_AUDIT_MAX_MB: ${WECLAPP_AUDIT_MAX_MB:-100}
+      WECLAPP_MAX_WRITES_PER_HOUR: ${WECLAPP_MAX_WRITES_PER_HOUR:-120}
+      # Öffentliche Domain. Schickt das vorgeschaltete NGINX stattdessen "Host: 127.0.0.1:<port>",
+      # passt das auch: localhost und 127.0.0.1 sind immer erlaubt.
+      MCP_ALLOWED_HOSTS: ${MCP_DOMAIN:?MCP_DOMAIN in .env setzen}
+      # Nur auf true setzen, wenn das vorgeschaltete NGINX X-Forwarded-For selbst setzt oder ergänzt
+      # (DEPLOY.md, Schritt 4). Reicht es den Header des Clients unverändert durch,
+      # könnte jeder seine Adresse fälschen und das Rate-Limit umgehen.
+      MCP_TRUST_PROXY: ${MCP_TRUST_PROXY:-false}
+    ports:
+      # Nur auf der Loopback-Schnittstelle: erreichbar allein für das NGINX auf demselben Server.
+      # Die Adresse 127.0.0.1 steht hier fest und lässt sich über .env nicht ändern.
+      - "127.0.0.1:${MCP_PORT:?MCP_PORT in .env setzen (der Port, an den das NGINX weiterleitet)}:3000"
+    volumes:
+      # Änderungsprotokoll (JSON Lines, eine Datei pro Monat) – regelmäßig sichern, siehe DEPLOY.md
+      - audit_data:/data
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 200
+    mem_limit: 512m
+    # Auf geteilten oder verwalteten Servern den Rechner nicht übermäßig belasten
+    cpus: 1.0
+    # Docker-Log begrenzen (der Server schreibt nur Start- und Fehlermeldungen, nie den Token)
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
+
+volumes:
+  audit_data:

@@ -70,6 +70,8 @@ Den Token behandelst du wie ein Passwort: Wer ihn hat, hat in weclapp deine Rech
 
 Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Container selbst ist von außen nicht erreichbar.
 
+Läuft auf deinem Server schon ein NGINX, das TLS übernimmt und an einen lokalen Port weiterleitet (etwa die Option „Proxy auf App-Server/Port“ einer Hosting-Verwaltungsoberfläche), nimm stattdessen `docker-compose.nginx.yml`. Die Schritt-für-Schritt-Anleitung steht in [DEPLOY.md](DEPLOY.md).
+
 **Voraussetzungen:** ein VPS mit Docker, eine (Sub-)Domain wie `mcp.example.com`, deren DNS-Eintrag auf den VPS zeigt, und offene Ports 80 und 443.
 
 ```bash
@@ -100,7 +102,8 @@ git pull && docker compose up -d --build
 | `WECLAPP_AUDIT_MAX_MB` | nein | Maximale Größe des Protokolls in MB (Standard 100, `0` = unbegrenzt); danach keine Schreibaktionen mehr |
 | `WECLAPP_MAX_WRITES_PER_HOUR` | nein | Schreibaktionen pro Nutzer und Stunde (Standard 120, `0` = unbegrenzt) |
 | `MCP_ALLOWED_HOSTS` | nein | Erlaubte Host-Header, kommagetrennt (Compose setzt ihn aus `MCP_DOMAIN`) |
-| `MCP_TRUST_PROXY` | nein | `true` = Client-IP aus `X-Forwarded-For` (nur hinter eigenem Proxy; Compose setzt es). Nie setzen, wenn der Port direkt erreichbar ist |
+| `MCP_TRUST_PROXY` | nein | `true` = Client-IP aus `X-Forwarded-For` (nur hinter eigenem Proxy; die Caddy-Variante setzt es, die NGINX-Variante nur nach Prüfung, siehe [DEPLOY.md](DEPLOY.md)). Nie setzen, wenn der Port direkt erreichbar ist |
+| `MCP_PORT` | ja (NGINX-Variante) | Port auf `127.0.0.1`, an den das vorhandene NGINX weiterleitet |
 | `PORT`, `HOST` | nein | Standard `3000` / `127.0.0.1` (im Container `0.0.0.0`) |
 | `WECLAPP_BASE_URL` | nein | Überschreibt die API-URL komplett (Tests, eigene Domain) |
 
