@@ -53,11 +53,11 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(status, 403);
   });
 
-  test('listet alle 21 Tools', async () => {
+  test('listet alle 22 Tools', async () => {
     const { tools } = await anna.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.equal(names.length, 21, names.join(', '));
-    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
+    assert.equal(names.length, 22, names.join(', '));
+    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_create_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
       assert.ok(names.includes(name), `${name} fehlt`);
     }
     const update = tools.find((t) => t.name === 'weclapp_update_ticket');

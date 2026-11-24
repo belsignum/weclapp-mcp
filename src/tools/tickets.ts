@@ -147,6 +147,42 @@ export function registerTicketTools(ctx: ToolContext): void {
   if (readOnly) return;
 
   server.registerTool(
+    'weclapp_create_ticket',
+    {
+      title: 'Helpdesk-Ticket anlegen',
+      description:
+        'Legt ein neues Helpdesk-Ticket für einen Kunden an. Den Kunden (partyId) mit weclapp_search_parties suchen, IDs für Status, Kategorie, Kanal und Nutzer mit weclapp_lookup auflösen. ' +
+        'Ohne assignedUserId wird das Ticket dem Nutzer des Tokens zugewiesen. Status, Priorität und Kanal braucht in weclapp jedes Ticket; fehlen sie, setzt weclapp in der Regel seine Standardwerte, sonst nennt die Fehlermeldung das fehlende Feld. ' +
+        'Vor dem Anlegen Betreff, Kunde, Zuweisung und alle weiteren Angaben dem Nutzer zeigen und auf seine Bestätigung warten; dryRun: true prüft die Angaben vorab, ohne etwas zu speichern. ' +
+        'Das Ergebnis enthält die Ticketnummer (ticketNumber) und eine changeId für weclapp_undo_change.',
+      inputSchema: z.object({
+        subject: z.string().trim().min(1).max(150).describe('Betreff (höchstens 150 Zeichen).'),
+        partyId: idArg.describe('Kunde, zu dem das Ticket gehört (weclapp_search_parties).'),
+        description: z.string().optional().describe('Beschreibung des Anliegens (HTML erlaubt).'),
+        ticketStatusId: refArg('Ticketstatus (weclapp_lookup resource=ticketStatus).'),
+        ticketPriorityId: refArg('Priorität. Die ID steht in bestehenden Tickets (ticketPriorityId).'),
+        ticketCategoryId: refArg('Kategorie (weclapp_lookup resource=ticketCategory).'),
+        ticketChannelId: refArg('Kanal, über den das Anliegen kam (weclapp_lookup resource=ticketChannel).'),
+        assignedUserId: refArg('Zugewiesener Nutzer (weclapp_lookup resource=user). Standard: Token-Nutzer. Für ein Ticket ohne Zuweisung in fields {"assignedUserId": null} senden.'),
+        contactId: refArg('Ansprechpartner beim Kunden (weclapp_search_parties).'),
+        billable: z.boolean().optional().describe('true = Ticket als abrechenbar kennzeichnen.'),
+        fields: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Weitere Ticketfelder mit ihren weclapp-Namen, z. B. {"ticketTypeId": "815", "contractId": "60", "solutionDueDate": "2026-12-01", "tags": ["Website"]}. Die Angaben oben haben Vorrang.'),
+        dryRun: dryRunArg,
+      }),
+      annotations: CREATE,
+    },
+    ({ fields, dryRun, ...known }) => run(async () => {
+      const ticket: Record<string, unknown> = { ...fields, ...known };
+      // Auch ein ausdrückliches null in "fields" gilt als Angabe: so bleibt ein Ticket ohne Zuweisung möglich
+      if (!('assignedUserId' in ticket)) ticket.assignedUserId = (await client.currentUser()).id;
+      return auditedCreate(ctx, 'weclapp_create_ticket', 'ticket', ticket, dryRun);
+    }),
+  );
+
+  server.registerTool(
     'weclapp_update_ticket',
     {
       title: 'Helpdesk-Ticket ändern',

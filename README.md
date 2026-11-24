@@ -4,7 +4,7 @@ MCP-Server für [weclapp](https://www.weclapp.com) auf Basis der REST-API v2. Er
 
 - **Artikel** lesen, anlegen, bearbeiten
 - **Ausgangsrechnungen** lesen
-- **Helpdesk-Tickets** lesen, bearbeiten, kommentieren, Zeiten buchen und korrigieren
+- **Helpdesk-Tickets** lesen, anlegen, bearbeiten, kommentieren, Zeiten buchen und korrigieren
 - **Verträge** lesen und bearbeiten
 
 Der Server speichert **keinen** weclapp-Token. Jeder Request bringt den Token als `Authorization: Bearer <weclapp-API-Token>` mit. Der Server lässt ihn von weclapp bestätigen, bevor er irgendetwas verarbeitet, und handelt dann in weclapp mit genau deinen Rechten. Zeitbuchungen landen automatisch bei dir.
@@ -22,7 +22,7 @@ Jede Schreibaktion landet in einem **Änderungsprotokoll** und lässt sich mit e
 | | `weclapp_create_article`, `weclapp_update_article` | schreiben |
 | Rechnungen | `weclapp_search_sales_invoices`, `weclapp_get_sales_invoice` | lesen |
 | Tickets | `weclapp_search_tickets`, `weclapp_get_ticket` (inkl. Kommentare und Zeiten), `weclapp_list_time_records` | lesen |
-| | `weclapp_update_ticket`, `weclapp_add_ticket_comment`, `weclapp_book_time`, `weclapp_update_time_record` | schreiben |
+| | `weclapp_create_ticket`, `weclapp_update_ticket`, `weclapp_add_ticket_comment`, `weclapp_book_time`, `weclapp_update_time_record` | schreiben |
 | Verträge | `weclapp_search_contracts`, `weclapp_get_contract` | lesen |
 | | `weclapp_update_contract` | schreiben |
 | Protokoll | `weclapp_list_changes` – eigene Änderungen mit Vorher/Nachher | lesen |
@@ -36,6 +36,8 @@ Datumsangaben nimmt der Server nur als ISO-8601 an (`2026-11-12` oder `2026-11-1
 
 Kommentare sind standardmäßig nur intern möglich. Für Kunden sichtbare Kommentare schaltest du mit `WECLAPP_ALLOW_PUBLIC_COMMENTS=true` frei.
 
+`weclapp_create_ticket` verlangt den Betreff (`subject`) und den Kunden (`partyId`). Ohne `assignedUserId` weist es das Ticket dir zu. Dazu kommen wahlweise Beschreibung, Status, Priorität, Kategorie, Kanal, Ansprechpartner (`contactId`) und `billable`; alles Weitere nimmt `fields` mit den weclapp-Feldnamen auf. weclapp selbst kennzeichnet Status, Priorität und Kanal als Pflichtangaben eines Tickets und setzt für fehlende Pflichtangaben laut API-Dokumentation in der Regel Standardwerte. Ob dein Mandant die Angaben annimmt, zeigt `dryRun: true`.
+
 ## Änderungsprotokoll und Rückgängig
 
 Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreibt nach `/data/audit` (Volume `audit_data`), eine Datei pro Monat im JSON-Lines-Format:
@@ -48,7 +50,7 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Ablauf:** Der Eintrag wird geschrieben, *bevor* weclapp geändert wird. Lässt sich das Protokoll nicht schreiben, findet die Änderung nicht statt.
 - **Inhalt:** nur die betroffenen Felder vorher und nachher, nie der Token. `dryRun`-Aufrufe werden nicht protokolliert.
 - **Sichtbarkeit:** Jeder sieht und ändert nur Einträge seines eigenen weclapp-Nutzers.
-- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Auch das Rückgängigmachen wird protokolliert.
+- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Auch das Rückgängigmachen wird protokolliert.
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
 - **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
 - **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
@@ -204,6 +206,7 @@ Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest 
 - Für **Ticket-Prioritäten** gibt es keinen API-Endpunkt zum Nachschlagen. Die IDs stehen in bestehenden Tickets (`ticketPriorityId`).
 - **PDF-Download** von Rechnungen und Vertragsdokumenten ist nicht enthalten.
 - Ob ein **öffentlicher Ticket-Kommentar** beim Kunden zusätzlich eine E-Mail auslöst, hängt von den weclapp-Einstellungen ab und ist nicht geprüft.
+- **Ticket anlegen:** Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss. Welche Angaben dein Mandant ohne Standardwert verlangt und ob er das Löschen eines angelegten Tickets zulässt, ist nur gegen den nachgebauten weclapp-Server getestet.
 - **Rückgängig bei Listen** (Vertragspositionen, Artikelpreise): Gelöschte Einträge legt weclapp mit neuer ID an. Dieses Verhalten ist nur gegen den nachgebauten weclapp-Server getestet.
 
 ## Entwicklung

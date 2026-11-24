@@ -105,7 +105,7 @@ export function registerChangeTools(ctx: ToolContext): void {
     {
       title: 'Änderung rückgängig machen',
       description:
-        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Zeitbuchungen, Kommentare oder Artikel wieder gelöscht. ' +
+        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder gelöscht. ' +
         'Bricht ab, wenn der Datensatz seit der Änderung anders verändert wurde. Vorher dem Nutzer zeigen, was zurückgesetzt wird, und bestätigen lassen; dryRun: true zeigt eine Vorschau. ' +
         'Ein bereits vom Kunden gesehener öffentlicher Kommentar lässt sich nur löschen, nicht ungesehen machen.',
       inputSchema: z.object({

@@ -90,14 +90,20 @@ export async function startMockWeclapp() {
     if (req.method === 'GET' && list) return send(200, { result: rows });
     if (req.method === 'POST' && list) {
       const body = JSON.parse(raw || '{}');
-      if (entity === 'article' && !body.articleNumber) {
-        return send(400, { title: 'validation error', status: 400, validationErrors: [{ location: 'articleNumber', detail: 'must not be empty' }] });
+      const invalid = (location: string, detail: string) =>
+        send(400, { title: 'entity validation failed', status: 400, detail, validationErrors: [{ location, detail, title: detail }] });
+      if (entity === 'article' && !body.articleNumber) return invalid('articleNumber', 'must not be empty');
+      if (entity === 'ticket') {
+        if (!body.subject) return invalid('subject', 'must not be empty');
+        if (body.partyId !== undefined && !data.party.some((party) => party.id === body.partyId)) return invalid('partyId', 'referenced entity not found');
       }
-      const created: Row = { ...body, id: String(nextId), version: '0' };
-      if (!dryRun) {
-        nextId += 1;
-        rows.push(created);
-      }
+      // Pflichtangaben mit Standardwert füllt weclapp selbst (API-Doku, "Create a new instance"); welche das beim Ticket sind, ist hier angenommen
+      const defaults = entity === 'ticket' ? { ticketNumber: `T-${nextId}`, ticketStatusId: '1', billable: false } : {};
+      // Im Probelauf antwortet weclapp mit 200 und ohne id, version, createdDate und lastModifiedDate (API-Doku, "Dry-Run")
+      if (dryRun) return send(200, { ...defaults, ...body });
+      const created: Row = { ...defaults, ...body, id: String(nextId), version: '0' };
+      nextId += 1;
+      rows.push(created);
       return send(201, created);
     }
     if (req.method === 'PUT' && single) {
