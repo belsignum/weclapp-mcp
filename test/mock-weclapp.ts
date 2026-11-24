@@ -87,7 +87,13 @@ export async function startMockWeclapp() {
       const item = rows.find((e) => e.id === single[2]);
       return item ? send(200, item) : send(404, { title: 'Not Found', status: 404, detail: `${entity} ${single[2]} not found` });
     }
-    if (req.method === 'GET' && list) return send(200, { result: rows });
+    if (req.method === 'GET' && list) {
+      // Filter "feld-eq=wert" und die Zuordnung von Kommentaren (entityName, entityId) wirken wie in weclapp; andere Operatoren ignoriert der Nachbau
+      const wanted = [...url.searchParams].flatMap(([key, value]) =>
+        key.endsWith('-eq') ? [[key.slice(0, -3), value]] : entity === 'comment' && (key === 'entityName' || key === 'entityId') ? [[key, value]] : [],
+      );
+      return send(200, { result: rows.filter((row) => wanted.every(([field, value]) => String(row[field]) === value)) });
+    }
     if (req.method === 'POST' && list) {
       const body = JSON.parse(raw || '{}');
       const invalid = (location: string, detail: string) =>

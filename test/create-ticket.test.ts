@@ -170,6 +170,30 @@ describe('Ticket anlegen', () => {
     assert.equal(entry.undoneBy, undo.changeId);
     assert.equal(entry.undoable, false);
   });
+
+  test('Undo lässt ein Ticket stehen, an dem Zeiten oder Kommentare hängen oder das inzwischen geändert wurde', async () => {
+    const created = json(await call('weclapp_create_ticket', { subject: 'Schon in Arbeit', partyId: '50' }));
+    const id = created.result.id;
+    const undo = (dryRun = false) => call('weclapp_undo_change', { changeId: created.changeId, dryRun });
+
+    const booked = json(await call('weclapp_book_time', { ticketId: id, minutes: 15, description: 'Analyse' }));
+    for (const attempt of [await undo(true), await undo()]) {
+      assert.equal(attempt.isError, true);
+      assert.match(text(attempt), /Abgebrochen.*Zeitbuchungen/);
+    }
+    json(await call('weclapp_undo_change', { changeId: booked.changeId }));
+
+    const comment = json(await call('weclapp_add_ticket_comment', { ticketId: id, text: 'Rückfrage an den Kunden' }));
+    assert.match(text(await undo()), /Abgebrochen.*Kommentare/);
+    json(await call('weclapp_undo_change', { changeId: comment.changeId }));
+    assert.equal(json(await undo(true)).dryRun, true, 'ohne Zeiten und Kommentare wäre das Löschen wieder möglich');
+
+    json(await call('weclapp_update_ticket', { id, fields: { ticketStatusId: '2' } }));
+    assert.match(text(await undo()), /inzwischen verändert/);
+
+    assert.ok(exists(id));
+    assert.equal(mock.requests.filter((r) => r.method === 'DELETE' && r.path === `/ticket/id/${id}`).length, 0);
+  });
 });
 
 test('Ticket anlegen zählt zum Schreiblimit, der Probelauf nicht', async () => {

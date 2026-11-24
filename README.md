@@ -50,7 +50,7 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Ablauf:** Der Eintrag wird geschrieben, *bevor* weclapp geändert wird. Lässt sich das Protokoll nicht schreiben, findet die Änderung nicht statt.
 - **Inhalt:** nur die betroffenen Felder vorher und nachher, nie der Token. `dryRun`-Aufrufe werden nicht protokolliert.
 - **Sichtbarkeit:** Jeder sieht und ändert nur Einträge seines eigenen weclapp-Nutzers.
-- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Auch das Rückgängigmachen wird protokolliert.
+- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Ein angelegtes Ticket bleibt außerdem stehen, sobald Zeitbuchungen oder Kommentare daran hängen. Auch das Rückgängigmachen wird protokolliert.
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
 - **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
 - **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
