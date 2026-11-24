@@ -55,8 +55,7 @@ export function registerLookupTools({ server, client }: ToolContext): void {
     {
       title: 'Stammdaten nachschlagen',
       description:
-        'Liest Stammdaten-Listen, um einen Namen in die ID zu übersetzen, die andere Tools brauchen: Nutzer (Zuständige, Zeitbuchung), Ticketstatus, Ticket-Prioritäten, Tickettypen, Ticketkategorien, Ticketkanäle, SLAs, Pooling-Gruppen, Einheiten, Steuersätze, Artikelkategorien, Währungen, Vertragsarten, Kündigungsgründe, Abrechnungsgruppen, Leistungsorte und Kostenstellen. ' +
-        'Hinweis: Antwortet weclapp bei ticketPriority mit 404, kennt der Mandant diesen Endpunkt nicht; die IDs stehen dann in bestehenden Tickets (ticketPriorityId).',
+        'Liest Stammdaten-Listen, um einen Namen in die ID zu übersetzen, die andere Tools brauchen: Nutzer (Zuständige, Zeitbuchung), Ticketstatus, Ticket-Prioritäten, Tickettypen, Ticketkategorien, Ticketkanäle, SLAs, Pooling-Gruppen, Einheiten, Steuersätze, Artikelkategorien, Währungen, Vertragsarten, Kündigungsgründe, Abrechnungsgruppen, Leistungsorte und Kostenstellen.',
       inputSchema: z.object({
         resource: z.enum(RESOURCE_NAMES).describe('Welche Liste gelesen wird.'),
         query: z.string().optional().describe('Optionaler Suchbegriff (Teilstring in Name, Vor-/Nachname, E-Mail oder Beschreibung).'),
