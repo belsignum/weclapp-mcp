@@ -203,7 +203,7 @@ Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest 
 
 ## Bekannte Grenzen
 
-- Für **Ticket-Prioritäten** gibt es keinen API-Endpunkt zum Nachschlagen. Die IDs stehen in bestehenden Tickets (`ticketPriorityId`).
+- **Ticket-Prioritäten** liest `weclapp_lookup` über den Endpunkt `/ticketPriority`. Er steht in der aktuellen OpenAPI-Spezifikation von weclapp, am echten Mandanten ist er nicht geprüft. Antwortet weclapp mit `404`, stehen die IDs in bestehenden Tickets (`ticketPriorityId`).
 - **PDF-Download** von Rechnungen und Vertragsdokumenten ist nicht enthalten.
 - Ob ein **öffentlicher Ticket-Kommentar** beim Kunden zusätzlich eine E-Mail auslöst, hängt von den weclapp-Einstellungen ab und ist nicht geprüft.
 - **Ticket anlegen:** Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss. Welche Angaben dein Mandant ohne Standardwert verlangt und ob er das Löschen eines angelegten Tickets zulässt, ist nur gegen den nachgebauten weclapp-Server getestet.

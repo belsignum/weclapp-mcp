@@ -151,7 +151,7 @@ export function registerTicketTools(ctx: ToolContext): void {
     {
       title: 'Helpdesk-Ticket anlegen',
       description:
-        'Legt ein neues Helpdesk-Ticket für einen Kunden an. Den Kunden (partyId) mit weclapp_search_parties suchen, IDs für Status, Kategorie, Kanal und Nutzer mit weclapp_lookup auflösen. ' +
+        'Legt ein neues Helpdesk-Ticket für einen Kunden an. Den Kunden (partyId) mit weclapp_search_parties suchen, IDs für Status, Priorität, Kategorie, Kanal und Nutzer mit weclapp_lookup auflösen. ' +
         'Ohne assignedUserId wird das Ticket dem Nutzer des Tokens zugewiesen. Status, Priorität und Kanal braucht in weclapp jedes Ticket; fehlen sie, setzt weclapp in der Regel seine Standardwerte, sonst nennt die Fehlermeldung das fehlende Feld. ' +
         'Vor dem Anlegen Betreff, Kunde, Zuweisung und alle weiteren Angaben dem Nutzer zeigen und auf seine Bestätigung warten; dryRun: true prüft die Angaben vorab, ohne etwas zu speichern. ' +
         'Das Ergebnis enthält die Ticketnummer (ticketNumber) und eine changeId für weclapp_undo_change.',
@@ -160,7 +160,7 @@ export function registerTicketTools(ctx: ToolContext): void {
         partyId: idArg.describe('Kunde, zu dem das Ticket gehört (weclapp_search_parties).'),
         description: z.string().optional().describe('Beschreibung des Anliegens (HTML erlaubt).'),
         ticketStatusId: refArg('Ticketstatus (weclapp_lookup resource=ticketStatus).'),
-        ticketPriorityId: refArg('Priorität. Die ID steht in bestehenden Tickets (ticketPriorityId).'),
+        ticketPriorityId: refArg('Priorität (weclapp_lookup resource=ticketPriority).'),
         ticketCategoryId: refArg('Kategorie (weclapp_lookup resource=ticketCategory).'),
         ticketChannelId: refArg('Kanal, über den das Anliegen kam (weclapp_lookup resource=ticketChannel).'),
         assignedUserId: refArg('Zugewiesener Nutzer (weclapp_lookup resource=user). Standard: Token-Nutzer. Für ein Ticket ohne Zuweisung in fields {"assignedUserId": null} senden.'),

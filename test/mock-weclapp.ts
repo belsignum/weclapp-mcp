@@ -32,6 +32,10 @@ function seed(): Record<string, Row[]> {
       { id: '2', name: 'In Arbeit', internalTicketStatus: 'IN_PROGRESS' },
       { id: '3', name: 'Erledigt', internalTicketStatus: 'CLOSED' },
     ],
+    ticketPriority: [
+      { id: '8', name: 'Hoch', active: true, positionNumber: 1 },
+      { id: '9', name: 'Normal', active: true, positionNumber: 2 },
+    ],
     comment: [{ id: '30', entityName: 'ticket', entityId: '20', comment: 'Toner getauscht', privateComment: true, publicComment: false }],
     timeRecord: [{ id: '40', ticketId: '20', userId: '100', startDate: 1767225600000, durationSeconds: 1800, billableDurationSeconds: 1800 }],
     contract: [

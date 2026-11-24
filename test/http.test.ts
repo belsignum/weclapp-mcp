@@ -197,6 +197,24 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     const data = json(await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'unit', query: 'stun' } }));
     assert.deepEqual(data.result.map((u: { name: string }) => u.name), ['Stunde']);
   });
+
+  test('Ticket-Prioritäten nachschlagen; kennt der Mandant den Endpunkt nicht, kommt die 404 von weclapp an', async () => {
+    mock.requests.length = 0;
+    const data = json(await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'ticketPriority', query: 'norm' } }));
+    assert.deepEqual(data.result, [{ id: '9', name: 'Normal', active: true, positionNumber: 2 }]);
+    const request = mock.requests.find((r) => r.path === '/ticketPriority')!;
+    assert.equal(request.query.properties, 'id,name,active,positionNumber');
+
+    const priorities = mock.data.ticketPriority;
+    delete mock.data.ticketPriority;
+    try {
+      const missing = await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'ticketPriority' } });
+      assert.equal(missing.isError, true);
+      assert.match(text(missing), /HTTP 404/);
+    } finally {
+      mock.data.ticketPriority = priorities;
+    }
+  });
 });
 
 describe('Nur-Lesen-Modus', () => {
