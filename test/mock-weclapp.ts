@@ -106,11 +106,20 @@ export async function startMockWeclapp() {
       if (entity === 'ticket') {
         if (!body.subject) return invalid('subject', 'must not be empty');
         if (body.partyId !== undefined && !data.party.some((party) => party.id === body.partyId)) return invalid('partyId', 'referenced entity not found');
+        // Wie am echten Mandanten im Probelauf beobachtet (24.11.2026): keine Standard-Priorität, und ohne Statusangabe
+        // gilt "nicht zugewiesen", wozu keine Zuweisung passt
+        if (!body.ticketPriorityId) return invalid('ticketPriorityId', 'value must not be empty');
+        const status = data.ticketStatus.find((entry) => entry.id === (body.ticketStatusId ?? '1'));
+        if (body.assignedUserId != null && status?.internalTicketStatus === 'UNASSIGNED') {
+          return invalid('assignedUserId', 'assigned user must be null for internal ticket status: UNASSIGNED');
+        }
       }
-      // Pflichtangaben mit Standardwert füllt weclapp selbst (API-Doku, "Create a new instance"); welche das beim Ticket sind, ist hier angenommen
-      const defaults = entity === 'ticket' ? { ticketNumber: `T-${nextId}`, ticketStatusId: '1', billable: false } : {};
-      // Im Probelauf antwortet weclapp mit 200 und ohne id, version, createdDate und lastModifiedDate (API-Doku, "Dry-Run")
+      // Status, Kanal und billable füllt weclapp selbst, wenn sie fehlen (ebenfalls im Probelauf beobachtet)
+      const defaults = entity === 'ticket' ? { ticketStatusId: '1', ticketChannelId: '12', billable: true } : {};
+      // Im Probelauf antwortet weclapp mit 200 und ohne id, version, createdDate und lastModifiedDate (API-Doku, "Dry-Run"),
+      // beim Ticket auch ohne Ticketnummer
       if (dryRun) return send(200, { ...defaults, ...body });
+      if (entity === 'ticket') Object.assign(defaults, { ticketNumber: `T-${nextId}` });
       const created: Row = { ...defaults, ...body, id: String(nextId), version: '0' };
       nextId += 1;
       rows.push(created);

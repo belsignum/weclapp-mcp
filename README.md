@@ -36,7 +36,9 @@ Datumsangaben nimmt der Server nur als ISO-8601 an (`2026-11-12` oder `2026-11-1
 
 Kommentare sind standardmäßig nur intern möglich. Für Kunden sichtbare Kommentare schaltest du mit `WECLAPP_ALLOW_PUBLIC_COMMENTS=true` frei.
 
-`weclapp_create_ticket` verlangt den Betreff (`subject`) und den Kunden (`partyId`). Ohne `assignedUserId` weist es das Ticket dir zu. Dazu kommen wahlweise Beschreibung, Status, Priorität, Kategorie, Kanal, Ansprechpartner (`contactId`) und `billable`; alles Weitere nimmt `fields` mit den weclapp-Feldnamen auf. weclapp selbst kennzeichnet Status, Priorität und Kanal als Pflichtangaben eines Tickets und setzt für fehlende Pflichtangaben laut API-Dokumentation in der Regel Standardwerte. Ob dein Mandant die Angaben annimmt, zeigt `dryRun: true`.
+`weclapp_create_ticket` verlangt den Betreff (`subject`), den Kunden (`partyId`) und die Priorität (`ticketPriorityId`), denn für die Priorität setzt weclapp keinen Standardwert. Je nach Einstellung deines Mandanten ist auch die Kategorie (`ticketCategoryId`) Pflicht. Kanal und Status ergänzt weclapp selbst. Dazu kommen wahlweise Beschreibung, Ansprechpartner (`contactId`) und `billable`; alles Weitere nimmt `fields` mit den weclapp-Feldnamen auf.
+
+Ohne `assignedUserId` weist das Tool das Ticket dir zu. Ein zugewiesenes Ticket braucht einen passenden Status: weclapp trägt sonst „nicht zugewiesen“ ein und lehnt die Zuweisung dann ab. Gibst du keinen Status an, setzt das Tool deshalb den ersten Status mit internem Status `IN_PROGRESS` (meist „Zugewiesen“). Mit `{"assignedUserId": null}` in `fields` bleibt das Ticket ohne Zuweisung. Ob dein Mandant die Angaben annimmt, zeigt `dryRun: true`.
 
 ## Änderungsprotokoll und Rückgängig
 
@@ -205,7 +207,7 @@ Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest 
 
 - **PDF-Download** von Rechnungen und Vertragsdokumenten ist nicht enthalten.
 - Ob ein **öffentlicher Ticket-Kommentar** beim Kunden zusätzlich eine E-Mail auslöst, hängt von den weclapp-Einstellungen ab und ist nicht geprüft.
-- **Ticket anlegen:** Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss. Welche Angaben dein Mandant ohne Standardwert verlangt und ob er das Löschen eines angelegten Tickets zulässt, ist nur gegen den nachgebauten weclapp-Server getestet.
+- **Ticket anlegen:** Am echten Mandanten ist nur der Probelauf (`dryRun`) geprüft. Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss; was oben zu Priorität, Kategorie, Kanal und Status steht, stammt aus diesem Probelauf an einem Mandanten. Das tatsächliche Anlegen, das Löschen eines angelegten Tickets und das, was weclapp beim Anlegen selbst nachzieht, sind nur gegen den nachgebauten weclapp-Server getestet.
 - **Rückgängig bei Listen** (Vertragspositionen, Artikelpreise): Gelöschte Einträge legt weclapp mit neuer ID an. Dieses Verhalten ist nur gegen den nachgebauten weclapp-Server getestet.
 
 ## Entwicklung
