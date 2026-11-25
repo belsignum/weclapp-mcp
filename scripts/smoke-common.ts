@@ -11,8 +11,9 @@ import { createInterface } from 'node:readline/promises';
 import { Writable } from 'node:stream';
 import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
 import { AuditLog } from '../src/audit.ts';
-import { loadWeclappConfig } from '../src/config.ts';
+import { loadWeclappConfig, type WeclappConfig } from '../src/config.ts';
 import { createHttpServer } from '../src/http.ts';
+import { WeclappClient } from '../src/weclapp/client.ts';
 
 let muted = false;
 const output = new Writable({
@@ -59,14 +60,29 @@ export function must(step: string, outcome: Outcome): any {
   return outcome.data;
 }
 
-/** Fragt Mandant und Token ab, startet den MCP-Server lokal und meldet einen MCP-Client daran an. */
-export async function startSession(clientName: string): Promise<{ client: Client; close: () => Promise<void> }> {
+/** Fragt Mandant und Token ab. Der Token bleibt im Speicher dieses Prozesses. */
+async function askAccess(): Promise<{ config: WeclappConfig; token: string }> {
   const tenant = process.env.WECLAPP_TENANT?.trim() || (await ask('Mandant (der Teil vor .weclapp.com): '));
-  const config = loadWeclappConfig({ WECLAPP_TENANT: tenant, WECLAPP_BASE_URL: process.env.WECLAPP_BASE_URL });
+  const config = loadWeclappConfig({ WECLAPP_TENANT: tenant, WECLAPP_BASE_URL: process.env.WECLAPP_BASE_URL, WECLAPP_TIMEZONE: process.env.WECLAPP_TIMEZONE });
   say(`Ziel: ${config.baseUrl}`);
 
   const token = process.env.WECLAPP_TOKEN?.trim() || (await askHidden('weclapp-API-Token (Eingabe bleibt unsichtbar): '));
   if (!token) throw new Error('Kein Token eingegeben.');
+  return { config, token };
+}
+
+/**
+ * Fragt Mandant und Token ab und liefert weclapp-Clients ohne MCP-Server: für rein lesende Proben an der API.
+ * `v1` spricht mit der älteren API-Version, die einzelne Datentypen noch kennt, die es in v2 nicht mehr gibt.
+ */
+export async function openWeclapp(): Promise<{ client: WeclappClient; v1: WeclappClient }> {
+  const { config, token } = await askAccess();
+  return { client: new WeclappClient(config.baseUrl, token), v1: new WeclappClient(config.baseUrl.replace(/\/v2$/, '/v1'), token) };
+}
+
+/** Fragt Mandant und Token ab, startet den MCP-Server lokal und meldet einen MCP-Client daran an. */
+export async function startSession(clientName: string): Promise<{ client: Client; close: () => Promise<void> }> {
+  const { config, token } = await askAccess();
 
   const auditDir = process.env.WECLAPP_AUDIT_DIR?.trim() || './audit';
   const audit = await AuditLog.open(auditDir);
@@ -75,6 +91,7 @@ export async function startSession(clientName: string): Promise<{ client: Client
     readOnly: false,
     allowPublicComments: false,
     audit,
+    timeZone: config.timeZone,
     allowedHosts: [],
     log: () => {},
   });

@@ -6,6 +6,7 @@ MCP-Server für [weclapp](https://www.weclapp.com) auf Basis der REST-API v2. Er
 - **Ausgangsrechnungen** lesen
 - **Helpdesk-Tickets** lesen, anlegen, bearbeiten, kommentieren, Zeiten buchen und korrigieren
 - **Verträge** lesen und bearbeiten
+- **Projekte** und ihre **Projektschritte** lesen, anlegen, bearbeiten, Zeiten darauf buchen
 
 Der Server speichert **keinen** weclapp-Token. Jeder Request bringt den Token als `Authorization: Bearer <weclapp-API-Token>` mit. Der Server lässt ihn von weclapp bestätigen, bevor er irgendetwas verarbeitet, und handelt dann in weclapp mit genau deinen Rechten. Zeitbuchungen landen automatisch bei dir.
 
@@ -25,6 +26,8 @@ Jede Schreibaktion landet in einem **Änderungsprotokoll** und lässt sich mit e
 | | `weclapp_create_ticket`, `weclapp_update_ticket`, `weclapp_add_ticket_comment`, `weclapp_book_time`, `weclapp_update_time_record` | schreiben |
 | Verträge | `weclapp_search_contracts`, `weclapp_get_contract` | lesen |
 | | `weclapp_update_contract` | schreiben |
+| Projekte | `weclapp_search_projects`, `weclapp_get_project` (inkl. Projektschritte), `weclapp_search_project_tasks` | lesen |
+| | `weclapp_create_project`, `weclapp_update_project`, `weclapp_create_project_task`, `weclapp_update_project_task` | schreiben |
 | Protokoll | `weclapp_list_changes` – eigene Änderungen mit Vorher/Nachher | lesen |
 | | `weclapp_undo_change` – eine eigene Änderung rückgängig machen | schreiben |
 
@@ -48,6 +51,18 @@ Kommentare sind standardmäßig nur intern möglich. Für Kunden sichtbare Komme
 
 Ohne `assignedUserId` weist das Tool das Ticket dir zu. Ein zugewiesenes Ticket braucht einen passenden Status: weclapp trägt sonst „nicht zugewiesen“ ein und lehnt die Zuweisung dann ab. Gibst du keinen Status an, setzt das Tool deshalb den ersten Status mit internem Status `IN_PROGRESS` (meist „Zugewiesen“). Mit `{"assignedUserId": null}` in `fields` bleibt das Ticket ohne Zuweisung. Ob dein Mandant die Angaben annimmt, zeigt `dryRun: true`.
 
+### Projekte und Projektschritte
+
+Die Projekt-Tools arbeiten mit dem Projektmodul von weclapp: Projekte (`/project`) mit ihrem Team und Projektschritte (`/projectTask`), auf die Zeiten gebucht werden.
+
+- `weclapp_search_projects` sucht in Projektname und Projektnummer, `weclapp_get_project` liefert das Team und die Schritte in der Reihenfolge des Projekts.
+- `weclapp_create_project` und `weclapp_update_project` legen Projekte an und ändern sie; das Team steht in `teamMembers`.
+- `weclapp_create_project_task` und `weclapp_update_project_task` tun dasselbe für die Schritte. Beim Anlegen nennst du Zuständige als Nutzer; das Tool übersetzt sie auf das Teammitglied des Projekts, auf das weclapp verweist.
+- `weclapp_book_time` bucht auf ein Ticket (`ticketId`) oder auf ein Projekt (`projectId` bzw. `projectTaskId`). Ein Projektschritt bringt sein Projekt und seinen Artikel mit, der den Stundensatz bestimmt.
+- `weclapp_list_time_records` filtert nach `projectId` und `projectTaskId`.
+
+Status, Priorität, Art und Rolle gibst du mit den Werten an, die weclapp selbst verwendet. An einem Mandanten gesehen: Projektstatus `DRAFT`, `OPEN`, `STARTED`, `DONE` oder leer, Rolle `PL`, Schritte mit `OPEN`, `MEDIUM`, `TASK`. Was es bei dir gibt, zeigt ein vorhandenes Projekt. Ein neues Projekt braucht nur einen Namen und hat zunächst keinen Status.
+
 ## Änderungsprotokoll und Rückgängig
 
 Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreibt nach `/data/audit` (Volume `audit_data`), eine Datei pro Monat im JSON-Lines-Format:
@@ -60,7 +75,7 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Ablauf:** Der Eintrag wird geschrieben, *bevor* weclapp geändert wird. Lässt sich das Protokoll nicht schreiben, findet die Änderung nicht statt.
 - **Inhalt:** nur die betroffenen Felder vorher und nachher, nie der Token. `dryRun`-Aufrufe werden nicht protokolliert.
 - **Sichtbarkeit:** Jeder sieht und ändert nur Einträge seines eigenen weclapp-Nutzers.
-- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Ein angelegtes Ticket bleibt außerdem stehen, sobald Zeitbuchungen oder Kommentare daran hängen. Auch das Rückgängigmachen wird protokolliert.
+- **Rückgängig:** `weclapp_undo_change` setzt geänderte Felder zurück und löscht angelegte Tickets, Zeitbuchungen, Kommentare, Artikel, Projekte oder Projektschritte wieder. Es bricht ab, wenn der Datensatz seitdem anders verändert wurde. Ein angelegtes Ticket bleibt außerdem stehen, sobald Zeitbuchungen oder Kommentare daran hängen, ein Projekt, sobald es Zeitbuchungen oder Schritte hat, ein Projektschritt, sobald Zeiten darauf gebucht sind. Auch das Rückgängigmachen wird protokolliert.
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
 - **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
 - **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
@@ -217,6 +232,8 @@ Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest 
 - **PDF-Download** von Rechnungen und Vertragsdokumenten ist nicht enthalten.
 - Ob ein **öffentlicher Ticket-Kommentar** beim Kunden zusätzlich eine E-Mail auslöst, hängt von den weclapp-Einstellungen ab und ist nicht geprüft.
 - **Ticket anlegen:** Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss. Was oben zu Priorität, Kategorie, Kanal und Status steht, stammt aus Probeläufen an einem Mandanten und kann an anderen abweichen. Dort sind auch Anlegen, Zurücklesen und Löschen über `weclapp_undo_change` geprüft (`scripts/smoke-ticket.ts`, 25.11.2026); weclapp hat am angelegten Ticket nichts selbst geändert. Zieht ein Mandant nach dem Anlegen etwas nach (Zuweisungsregeln, automatischer Kommentar), bricht das Rückgängigmachen mit einer Meldung ab, statt zu löschen. Dieser Fall ist nur gegen den nachgebauten weclapp-Server getestet.
+- **Projekte und Projektschritte:** `/project` und `/projectTask` stehen nicht in der OpenAPI-Spezifikation von weclapp. Dass die API sie liefert, ist an einem Mandanten lesend beobachtet (`scripts/probe-projects.ts`, 25.11.2026): Felder, Listen, Zählung und der Bezug aus der Zeitbuchung. Am selben Tag hat weclapp dort im Probelauf (`scripts/smoke-project.ts`, `dryRun`) das Anlegen und Ändern von Projekt und Projektschritt sowie Zeitbuchungen auf beide angenommen und dabei nachweislich nichts gespeichert. Nicht geprüft ist das echte Anlegen und das Löschen über `weclapp_undo_change`; beides ist nur gegen den nachgebauten weclapp-Server getestet. Nicht dokumentiert ist, welche Werte Status, Priorität, Art und Rolle annehmen dürfen: die Tools reichen sie ungeprüft an weclapp weiter. Weil nicht dokumentiert, können sich diese Endpunkte ohne Ankündigung ändern. Projektaufträge (Kundenaufträge im Projektmodus) und das Aufgabenmodul von weclapp unterstützt der Server nicht.
+- **ODER-Suche:** `query` in der Artikel-, Vertrags-, Kunden- und Projektsuche nutzt die `or-`Filter von weclapp. Für Artikel ist das an einem Mandanten bestätigt (25.11.2026).
 - **Rückgängig bei Listen** (Vertragspositionen, Artikelpreise): Gelöschte Einträge legt weclapp mit neuer ID an. Dieses Verhalten ist nur gegen den nachgebauten weclapp-Server getestet.
 
 ## Entwicklung
@@ -235,12 +252,16 @@ Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit No
 ```bash
 node scripts/smoke-article.ts
 node scripts/smoke-ticket.ts
+node scripts/smoke-project.ts
+node scripts/probe-projects.ts
 ```
 
-Beide Skripte fragen Mandant und Token ab (den Token verdeckt), starten den Server lokal und arbeiten über die MCP-Tools: erst als Probelauf, dann nach Rückfrage wirklich. Das Protokoll landet in `./audit`.
+Die Skripte fragen Mandant und Token ab (den Token verdeckt). Die drei Rauchtests starten den Server lokal und arbeiten über die MCP-Tools, das Protokoll landet in `./audit`; die Probe spricht ohne Server direkt mit der API. `smoke-article.ts` und `smoke-ticket.ts` laufen erst als Probelauf, dann nach Rückfrage wirklich.
 
 - `smoke-article.ts` legt einen inaktiven Testartikel an und löscht ihn auf Wunsch über `weclapp_undo_change` wieder.
 - `smoke-ticket.ts` legt ein Test-Ticket an, dir zugewiesen und mit abgeschalteten E-Mail-Vorlagen. Den Kunden wählst du aus, am besten die eigene Firma oder einen Testkunden. Das Skript zeigt, ob weclapp nach dem Anlegen selbst etwas am Ticket ändert, und löscht es auf Wunsch wieder; klappt das nicht, bietet es an, das Ticket zu schließen. Die Ticketnummer ist danach verbraucht.
+- `smoke-project.ts` liest ein Projekt mit Team, Schritten und Zeitbuchungen und lässt weclapp nach Rückfrage sechs Schreibaktionen nur im Probelauf prüfen: Zeit buchen, Projekt und Schritt ändern, Schritt und Projekt anlegen. Nach jedem Probelauf prüft es nach, dass weclapp wirklich nichts gespeichert hat.
+- `probe-projects.ts` liest direkt an der API, welcher Datentyp hinter `projectId` und `projectTaskId` einer Zeitbuchung steckt. Ausgegeben werden IDs, Feldnamen und Zählungen.
 
 ## Lizenz
 
