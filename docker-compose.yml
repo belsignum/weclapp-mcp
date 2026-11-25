@@ -14,6 +14,7 @@ services:
       WECLAPP_AUDIT_RETENTION_DAYS: ${WECLAPP_AUDIT_RETENTION_DAYS:-365}
       WECLAPP_AUDIT_MAX_MB: ${WECLAPP_AUDIT_MAX_MB:-100}
       WECLAPP_MAX_WRITES_PER_HOUR: ${WECLAPP_MAX_WRITES_PER_HOUR:-120}
+      WECLAPP_TIMEZONE: ${WECLAPP_TIMEZONE:-Europe/Berlin}
       MCP_ALLOWED_HOSTS: ${MCP_DOMAIN:?MCP_DOMAIN in .env setzen}
       # Nur Caddy erreicht den Container, daher darf X-Forwarded-For für das Rate-Limit gelten.
       # Den Port 3000 nie zusätzlich nach außen veröffentlichen: sonst könnte jeder diese Angabe fälschen.

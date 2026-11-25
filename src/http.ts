@@ -72,7 +72,7 @@ export function createHttpServer(options: HttpOptions) {
       const user = ctx.authInfo?.extra?.user as Entity | undefined;
       if (!token || !user) throw new Error('Request ohne geprüften weclapp-Token.');
       const client = new WeclappClient(options.baseUrl, token, { fetch: options.fetch, currentUser: user });
-      return createWeclappServer(client, { readOnly: options.readOnly, allowPublicComments: options.allowPublicComments, audit: options.audit, writeBudget });
+      return createWeclappServer(client, { readOnly: options.readOnly, allowPublicComments: options.allowPublicComments, audit: options.audit, writeBudget, timeZone: options.timeZone });
     },
     { maxRequestBodySize: MAX_BODY_BYTES, onerror: (error) => log(`[weclapp-mcp] ${error.message}`) },
   );
@@ -179,12 +179,13 @@ async function main(): Promise<void> {
     allowPublicComments: config.allowPublicComments,
     audit,
     maxWritesPerHour: config.maxWritesPerHour,
+    timeZone: config.timeZone,
     allowedHosts,
     trustProxy,
   });
   server.listen(port, host, () => {
     const mode = audit ? `Schreiben mit Protokoll in ${audit.dir}` : 'nur lesen';
-    console.error(`[weclapp-mcp] ${SERVER_INFO.version} hört auf http://${host}:${port}/mcp (Mandant: ${new URL(config.baseUrl).hostname}, ${mode})`);
+    console.error(`[weclapp-mcp] ${SERVER_INFO.version} hört auf http://${host}:${port}/mcp (Mandant: ${new URL(config.baseUrl).hostname}, Zeitzone ${config.timeZone}, ${mode})`);
     if (!audit && !config.readOnly) {
       console.error('[weclapp-mcp] WECLAPP_AUDIT_DIR ist nicht gesetzt: ohne Änderungsprotokoll werden keine Schreib-Tools angeboten.');
     }

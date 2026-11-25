@@ -26,7 +26,7 @@ async function main(): Promise<void> {
 
   const writeBudget = new WriteBudget(config.maxWritesPerHour);
 
-  serveStdio(() => createWeclappServer(client, { readOnly: config.readOnly, allowPublicComments: config.allowPublicComments, audit, writeBudget }), {
+  serveStdio(() => createWeclappServer(client, { readOnly: config.readOnly, allowPublicComments: config.allowPublicComments, audit, writeBudget, timeZone: config.timeZone }), {
     onerror: (error) => console.error('[weclapp-mcp]', error.message),
   });
 }

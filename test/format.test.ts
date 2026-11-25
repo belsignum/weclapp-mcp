@@ -20,7 +20,15 @@ test('datesFromIso wandelt ISO-Strings zurück und meldet Unsinn', () => {
 test('parseFilter erlaubt nur echte weclapp-Filter', () => {
   assert.deepEqual(parseFilter('name-ilike=%a%&active-eq=true'), { 'name-ilike': '%a%', 'active-eq': 'true' });
   assert.throws(() => parseFilter('pageSize=1000'), /Ungültiger Filter/);
-  assert.deepEqual(parseFilter('customerNumber-null'), { 'customerNumber-null': '' });
+});
+
+test('parseFilter: null und notnull kommen ohne Wert aus, andere Operatoren nicht', () => {
+  // Ein leerer Wert würde beim Senden entfallen und der Filter damit stillschweigend nicht wirken
+  assert.deepEqual(parseFilter('customerNumber-null'), { 'customerNumber-null': 'true' });
+  assert.deepEqual(parseFilter('customerNumber-null=&email-notnull'), { 'customerNumber-null': 'true', 'email-notnull': 'true' });
+  assert.deepEqual(parseFilter('customerNumber-notnull=false'), { 'customerNumber-notnull': 'true' }, 'weclapp wertet den Wert nicht aus');
+  assert.throws(() => parseFilter('contactId-eq='), /braucht einen Wert.*contactId-null/);
+  assert.throws(() => parseFilter('name-ilike'), /braucht einen Wert/);
 });
 
 test('loadWeclappConfig baut die URL aus dem Mandanten und prüft ihn', () => {
