@@ -207,7 +207,7 @@ Die Berichte beider Audits mit allen Befunden und verbleibenden Risiken findest 
 
 - **PDF-Download** von Rechnungen und Vertragsdokumenten ist nicht enthalten.
 - Ob ein **öffentlicher Ticket-Kommentar** beim Kunden zusätzlich eine E-Mail auslöst, hängt von den weclapp-Einstellungen ab und ist nicht geprüft.
-- **Ticket anlegen:** Am echten Mandanten ist nur der Probelauf (`dryRun`) geprüft. Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss; was oben zu Priorität, Kategorie, Kanal und Status steht, stammt aus diesem Probelauf an einem Mandanten. Das tatsächliche Anlegen, das Löschen eines angelegten Tickets und das, was weclapp beim Anlegen selbst nachzieht, sind nur gegen den nachgebauten weclapp-Server getestet.
+- **Ticket anlegen:** Die OpenAPI-Spezifikation von weclapp nennt für `POST /ticket` keine Felder, die der Aufrufer mitschicken muss. Was oben zu Priorität, Kategorie, Kanal und Status steht, stammt aus Probeläufen an einem Mandanten und kann an anderen abweichen. Dort sind auch Anlegen, Zurücklesen und Löschen über `weclapp_undo_change` geprüft (`scripts/smoke-ticket.ts`, 25.11.2026); weclapp hat am angelegten Ticket nichts selbst geändert. Zieht ein Mandant nach dem Anlegen etwas nach (Zuweisungsregeln, automatischer Kommentar), bricht das Rückgängigmachen mit einer Meldung ab, statt zu löschen. Dieser Fall ist nur gegen den nachgebauten weclapp-Server getestet.
 - **Rückgängig bei Listen** (Vertragspositionen, Artikelpreise): Gelöschte Einträge legt weclapp mit neuer ID an. Dieses Verhalten ist nur gegen den nachgebauten weclapp-Server getestet.
 
 ## Entwicklung
