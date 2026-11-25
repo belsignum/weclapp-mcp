@@ -1,3 +1,5 @@
+import { checkTimeZone } from './weclapp/format.ts';
+
 export interface WeclappConfig {
   /** Basis-URL der weclapp-API v2, z. B. https://acme.weclapp.com/webapp/api/v2 */
   baseUrl: string;
@@ -13,7 +15,12 @@ export interface WeclappConfig {
   auditMaxBytes: number;
   /** Maximale Schreibaktionen pro Nutzer und Stunde (0 = unbegrenzt). */
   maxWritesPerHour: number;
+  /** Zeitzone des Mandanten (IANA-Name). In ihr gelten Datumsangaben ohne Zeitzone, und in ihr wird ausgegeben. */
+  timeZone: string;
 }
+
+/** Die meisten weclapp-Mandanten arbeiten in Deutschland, Österreich oder der Schweiz: dort gilt überall dieselbe Zeit. */
+const DEFAULT_TIME_ZONE = 'Europe/Berlin';
 
 const TENANT_PATTERN = /^[a-z0-9][a-z0-9-]{0,62}$/i;
 
@@ -56,6 +63,15 @@ function count(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
   return value;
 }
 
+function timeZone(env: NodeJS.ProcessEnv): string {
+  const zone = env.WECLAPP_TIMEZONE?.trim() || DEFAULT_TIME_ZONE;
+  try {
+    return checkTimeZone(zone);
+  } catch {
+    throw new Error(`WECLAPP_TIMEZONE "${zone.slice(0, 60)}" ist keine bekannte Zeitzone. Erwartet wird ein IANA-Name wie "Europe/Berlin" oder "UTC".`);
+  }
+}
+
 export function loadWeclappConfig(env: NodeJS.ProcessEnv = process.env): WeclappConfig {
   const auditRetentionDays = count(env, 'WECLAPP_AUDIT_RETENTION_DAYS', 365);
   return {
@@ -66,5 +82,6 @@ export function loadWeclappConfig(env: NodeJS.ProcessEnv = process.env): Weclapp
     auditRetentionDays,
     auditMaxBytes: count(env, 'WECLAPP_AUDIT_MAX_MB', 100) * 1024 * 1024,
     maxWritesPerHour: count(env, 'WECLAPP_MAX_WRITES_PER_HOUR', 120),
+    timeZone: timeZone(env),
   };
 }

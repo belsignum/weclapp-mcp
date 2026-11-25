@@ -1,5 +1,5 @@
 import * as z from 'zod';
-import { compact, contains, toEpochMs } from '../weclapp/format.ts';
+import { compact, contains, toEpochMs, toEpochMsInclusive } from '../weclapp/format.ts';
 import { READ, allFieldsArg, filterArg, idArg, pagingArgs, refArg, run, search, sortArg, type ToolContext } from './common.ts';
 
 const STATUS = ['NEW', 'ENTRY_COMPLETED', 'DOCUMENT_CREATED', 'OPEN_ITEM_CREATED', 'CANCELLED'] as const;
@@ -21,7 +21,7 @@ export function registerInvoiceTools({ server, client }: ToolContext): void {
         paymentStatus: z.enum(PAYMENT_STATUS).optional().describe('OPEN = offen, PAID = bezahlt.'),
         salesInvoiceType: z.enum(INVOICE_TYPES).optional(),
         invoiceDateFrom: z.string().optional().describe('Rechnungsdatum ab (ISO-8601, z. B. 2026-01-01).'),
-        invoiceDateTo: z.string().optional().describe('Rechnungsdatum bis einschließlich (ISO-8601).'),
+        invoiceDateTo: z.string().optional().describe('Rechnungsdatum bis einschließlich (ISO-8601); ein reines Datum meint den ganzen Tag.'),
         filter: filterArg,
         sort: sortArg,
         ...pagingArgs,
@@ -29,9 +29,8 @@ export function registerInvoiceTools({ server, client }: ToolContext): void {
       }),
       annotations: READ,
     },
-    (input) => run(() => {
-      const to = input.invoiceDateTo ? toEpochMs(input.invoiceDateTo, 'invoiceDateTo') : undefined;
-      return search(client, 'salesInvoice', input, {
+    (input) => run(() =>
+      search(client, 'salesInvoice', input, {
         compactFields: COMPACT_FIELDS,
         defaultSort: '-invoiceDate',
         filters: compact({
@@ -41,11 +40,10 @@ export function registerInvoiceTools({ server, client }: ToolContext): void {
           'paymentStatus-eq': input.paymentStatus,
           'salesInvoiceType-eq': input.salesInvoiceType,
           'invoiceDate-ge': input.invoiceDateFrom ? toEpochMs(input.invoiceDateFrom, 'invoiceDateFrom') : undefined,
-          // "bis" inklusive des ganzen Tages, wenn nur ein Datum angegeben ist
-          'invoiceDate-le': to !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(input.invoiceDateTo!.trim()) ? to + 86_399_999 : to,
+          'invoiceDate-le': input.invoiceDateTo ? toEpochMsInclusive(input.invoiceDateTo, 'invoiceDateTo') : undefined,
         }),
-      });
-    }),
+      }),
+    ),
   );
 
   server.registerTool(

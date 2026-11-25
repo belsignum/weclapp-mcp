@@ -34,6 +34,14 @@ Pro Nutzer sind höchstens **120 Schreibaktionen pro Stunde** möglich (`WECLAPP
 
 Datumsangaben nimmt der Server nur als ISO-8601 an (`2026-11-12` oder `2026-11-12T09:30:00+01:00`). Andere Schreibweisen wie `12.11.2026` lehnt er ab, statt sie zu erraten.
 
+Der Server rechnet in der **Zeitzone deines Mandanten** (`WECLAPP_TIMEZONE`, Standard `Europe/Berlin`). weclapp speichert ein reines Datum wie das Rechnungsdatum oder das Vertragsende als Mitternacht dieser Zone. Deshalb gilt:
+
+- Eine Angabe ohne Zeitzone (`2026-11-20`, `2026-11-20T09:30`) meint die Zeit beim Mandanten. Mit Offset oder `Z` bleibt sie, wie sie ist.
+- Die Ausgabe trägt den Offset der Zone, zum Beispiel `2026-11-20T00:00:00.000+01:00`. Der Datumsteil ist damit der Tag, der in weclapp steht.
+- Zeiträume wie `invoiceDateFrom`/`invoiceDateTo` oder `from`/`to` beginnen und enden an den Tagesgrenzen des Mandanten.
+
+Mit `WECLAPP_TIMEZONE=UTC` verhält sich der Server wie vor dieser Einstellung: Ausgabe auf `Z`, ein reines Datum als Mitternacht UTC. Für einen Mandanten in Deutschland liegt ein Rechnungsdatum dann scheinbar am Vortag um 23 Uhr, und Datumsfilter greifen einen Tag daneben.
+
 Kommentare sind standardmäßig nur intern möglich. Für Kunden sichtbare Kommentare schaltest du mit `WECLAPP_ALLOW_PUBLIC_COMMENTS=true` frei.
 
 `weclapp_create_ticket` verlangt den Betreff (`subject`), den Kunden (`partyId`) und die Priorität (`ticketPriorityId`), denn für die Priorität setzt weclapp keinen Standardwert. Je nach Einstellung deines Mandanten ist auch die Kategorie (`ticketCategoryId`) Pflicht. Kanal und Status ergänzt weclapp selbst. Dazu kommen wahlweise Beschreibung, Ansprechpartner (`contactId`) und `billable`; alles Weitere nimmt `fields` mit den weclapp-Feldnamen auf.
@@ -99,6 +107,7 @@ git pull && docker compose up -d --build
 |---|---|---|
 | `WECLAPP_TENANT` | ja | Mandant aus `https://<tenant>.weclapp.com` |
 | `MCP_DOMAIN` | ja (Compose) | Öffentlicher Hostname; wird für TLS und den Host-Check genutzt |
+| `WECLAPP_TIMEZONE` | nein | Zeitzone des Mandanten als IANA-Name (Standard `Europe/Berlin`); gilt für Datumsangaben ohne Zeitzone und für die Ausgabe |
 | `WECLAPP_READ_ONLY` | nein | `true` = nur Lese-Tools |
 | `WECLAPP_ALLOW_PUBLIC_COMMENTS` | nein | `true` = Kommentare dürfen für Kunden sichtbar sein (Standard: aus) |
 | `WECLAPP_AUDIT_DIR` | nein | Verzeichnis des Änderungsprotokolls; im Docker-Image `/data/audit`. Ohne Angabe: nur lesen |
