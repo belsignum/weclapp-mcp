@@ -53,11 +53,11 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(status, 403);
   });
 
-  test('listet alle 22 Tools', async () => {
+  test('listet alle 29 Tools', async () => {
     const { tools } = await anna.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.equal(names.length, 22, names.join(', '));
-    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_create_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
+    assert.equal(names.length, 29, names.join(', '));
+    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_create_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_search_projects', 'weclapp_get_project', 'weclapp_create_project', 'weclapp_update_project', 'weclapp_search_project_tasks', 'weclapp_create_project_task', 'weclapp_update_project_task', 'weclapp_list_changes', 'weclapp_undo_change']) {
       assert.ok(names.includes(name), `${name} fehlt`);
     }
     const update = tools.find((t) => t.name === 'weclapp_update_ticket');
@@ -263,13 +263,13 @@ describe('Nur-Lesen-Modus', () => {
 
   test('ohne Änderungsprotokoll gibt es keine Schreib-Tools', async () => {
     const tools = await toolNames({ withAudit: false });
-    assert.equal(tools.length, 12);
+    assert.equal(tools.length, 15);
     assert.ok(tools.every((t) => t.annotations?.readOnlyHint === true));
   });
 
   test('readOnly mit Protokoll: nur lesen, Protokoll bleibt einsehbar', async () => {
     const tools = await toolNames({ readOnly: true });
-    assert.equal(tools.length, 13);
+    assert.equal(tools.length, 16);
     assert.ok(tools.some((t) => t.name === 'weclapp_list_changes'));
     assert.ok(!tools.some((t) => t.name === 'weclapp_undo_change'));
   });

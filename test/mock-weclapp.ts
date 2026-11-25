@@ -82,7 +82,10 @@ function seed(): Record<string, Row[]> {
       { id: '9', name: 'Normal', active: true, positionNumber: 2 },
     ],
     comment: [{ id: '30', entityName: 'ticket', entityId: '20', comment: 'Toner getauscht', privateComment: true, publicComment: false }],
-    timeRecord: [{ id: '40', ticketId: '20', userId: '100', startDate: 1767225600000, durationSeconds: 1800, billableDurationSeconds: 1800 }],
+    timeRecord: [
+      { id: '40', ticketId: '20', userId: '100', startDate: 1767225600000, durationSeconds: 1800, billableDurationSeconds: 1800 },
+      { id: '41', projectId: '70', projectTaskId: '80', articleId: '1', userId: '100', startDate: 1767229200000, durationSeconds: 3600, billableDurationSeconds: 3600 },
+    ],
     contract: [
       {
         id: '60',
@@ -98,6 +101,33 @@ function seed(): Record<string, Row[]> {
       },
     ],
     party: [{ id: '50', company: 'Muster GmbH', customerNumber: 'K-1', customer: true }],
+    // Projekte und Projektschritte stehen nicht in der OpenAPI-Spezifikation. Die Feldnamen sind am echten Mandanten
+    // beobachtet (scripts/probe-projects.ts und scripts/smoke-project.ts, 25.11.2026), ebenso die Werte: Projektstatus
+    // DRAFT, OPEN, STARTED, DONE oder leer, Rolle PL, Schritt mit OPEN, MEDIUM, TASK. Die übrigen Werte der Schritte
+    // (DONE, HIGH) sind Platzhalter: welche weclapp kennt, ist nicht dokumentiert.
+    project: [
+      {
+        id: '70',
+        projectNumber: 'P-0070',
+        name: 'Relaunch Website',
+        customerId: '50',
+        status: 'STARTED',
+        billable: true,
+        template: false,
+        projectStartDate: 1767225600000,
+        lastModifiedDate: 1767398400000,
+        tags: [],
+        version: '4',
+        teamMembers: [{ id: '700', userId: '100', role: 'PL', hourlyRate: '95', version: '0' }],
+      },
+      { id: '71', projectNumber: 'P-0071', name: 'Wartung Druckerei', customerId: '50', status: 'DONE', billable: true, template: false, lastModifiedDate: 1767312000000, version: '2', teamMembers: [] },
+      { id: '72', projectNumber: 'V-0001', name: 'Vorlage Relaunch', status: 'STARTED', billable: true, template: true, lastModifiedDate: 1767225600000, version: '1', teamMembers: [] },
+    ],
+    projectTask: [
+      { id: '81', projectId: '70', positionNumber: 2, name: 'Umsetzung', type: 'TASK', status: 'OPEN', priority: 'HIGH', allowTimeTracking: true, articleId: '1', hourlyRate: '95', effortPlanned: 0, version: '1' },
+      { id: '80', projectId: '70', positionNumber: 1, name: 'Konzept', type: 'TASK', status: 'OPEN', priority: 'MEDIUM', allowTimeTracking: true, articleId: '1', responsibleTeamMemberId: '700', assignedTeamMemberId: '700', startDate: 1767225600000, effortPlanned: 0, version: '2' },
+      { id: '82', projectId: '71', positionNumber: 1, name: 'Monatliche Wartung', type: 'TASK', status: 'DONE', priority: 'MEDIUM', allowTimeTracking: false, version: '0' },
+    ],
     unit: [{ id: '7', name: 'Stunde' }, { id: '8', name: 'Stück' }],
   };
 }
@@ -185,14 +215,37 @@ export async function startMockWeclapp() {
           return invalid('assignedUserId', 'assigned user must be null for internal ticket status: UNASSIGNED');
         }
       }
+      if (entity === 'project') {
+        if (!body.name) return invalid('name', 'must not be empty');
+        if (body.customerId != null && !data.party.some((party) => party.id === body.customerId)) return invalid('customerId', 'referenced entity not found');
+      }
+      if (entity === 'projectTask') {
+        if (!body.name) return invalid('name', 'must not be empty');
+        const project = data.project.find((row) => row.id === body.projectId);
+        if (!project) return invalid('projectId', 'referenced entity not found');
+        const members = ((project.teamMembers as Row[] | undefined) ?? []).map((member) => member.id);
+        for (const field of ['responsibleTeamMemberId', 'assignedTeamMemberId']) {
+          if (body[field] != null && !members.includes(body[field])) return invalid(field, 'referenced entity not found');
+        }
+      }
+      if (entity === 'timeRecord' && body.projectId != null) {
+        if (!data.project.some((row) => row.id === body.projectId)) return invalid('projectId', 'referenced entity not found');
+        if (body.projectTaskId != null && !data.projectTask.some((row) => row.id === body.projectTaskId && row.projectId === body.projectId)) return invalid('projectTaskId', 'referenced entity not found');
+      }
       // Status, Kanal und billable füllt weclapp selbst, wenn sie fehlen (ebenfalls im Probelauf beobachtet)
-      const defaults = entity === 'ticket' ? { ticketStatusId: '1', ticketChannelId: '12', billable: true } : {};
+      const defaults: Record<string, unknown> =
+        entity === 'ticket' ? { ticketStatusId: '1', ticketChannelId: '12', billable: true } : entity === 'project' ? { billable: true, template: false } : entity === 'projectTask' ? { status: 'OPEN' } : {};
       // Im Probelauf antwortet weclapp mit 200 und ohne id, version, createdDate und lastModifiedDate (API-Doku, "Dry-Run"),
       // beim Ticket auch ohne Ticketnummer
       if (dryRun) return send(200, { ...defaults, ...body });
       if (entity === 'ticket') Object.assign(defaults, { ticketNumber: `T-${nextId}` });
+      if (entity === 'project') Object.assign(defaults, { projectNumber: `P-${nextId}` });
       const created: Row = { ...defaults, ...body, id: String(nextId), version: '0' };
       nextId += 1;
+      // Listeneinträge (z. B. Teammitglieder) bekommen wie in weclapp eine eigene id
+      for (const [key, value] of Object.entries(created)) {
+        if (Array.isArray(value)) created[key] = value.map((entry) => (entry && typeof entry === 'object' && !('id' in entry) ? { ...entry, id: String(nextId++), version: '0' } : entry));
+      }
       rows.push(created);
       return send(201, created);
     }

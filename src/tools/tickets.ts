@@ -1,6 +1,7 @@
 import * as z from 'zod';
 import type { Entity } from '../weclapp/client.ts';
 import { compact, contains, toEpochMs } from '../weclapp/format.ts';
+import { projectTarget } from './projects.ts';
 import {
   CREATE,
   READ,
@@ -24,7 +25,7 @@ import {
 
 const TICKET_FIELDS =
   'id,ticketNumber,subject,ticketStatusId,ticketPriorityId,ticketTypeId,ticketCategoryId,partyId,contactId,contractId,assignedUserId,responsibleUserId,billable,createdDate,lastModifiedDate,solutionDueDate,followUpDate,tags';
-const TIME_RECORD_FIELDS = 'id,userId,startDate,durationSeconds,billableDurationSeconds,billable,description,ticketId,customerId,articleId,projectId,taskId,billableInvoiceStatus';
+const TIME_RECORD_FIELDS = 'id,userId,startDate,durationSeconds,billableDurationSeconds,billable,description,ticketId,customerId,articleId,projectId,projectTaskId,taskId,billableInvoiceStatus';
 const CLOSED_INTERNAL_STATUS = new Set(['CLOSED', 'FIXED']);
 
 export function registerTicketTools(ctx: ToolContext): void {
@@ -125,9 +126,12 @@ export function registerTicketTools(ctx: ToolContext): void {
     'weclapp_list_time_records',
     {
       title: 'Zeitbuchungen lesen',
-      description: 'Listet Zeitbuchungen (Zeiterfassung), z. B. zu einem Ticket, für einen Nutzer oder in einem Zeitraum. Dauer in Sekunden.',
+      description: 'Listet Zeitbuchungen (Zeiterfassung), z. B. zu einem Ticket, einem Projekt, einem Projektschritt, für einen Nutzer oder in einem Zeitraum. Dauer in Sekunden.',
       inputSchema: z.object({
         ticketId: refArg('Ticket.'),
+        projectId: refArg('Projekt (weclapp_search_projects).'),
+        projectTaskId: refArg('Projektschritt (weclapp_get_project oder weclapp_search_project_tasks).'),
+        taskId: refArg('Aufgabe aus dem Aufgabenmodul von weclapp (kein Projektschritt).'),
         mine: z.boolean().optional().describe('true = nur Buchungen des Token-Nutzers.'),
         userId: refArg('Nutzer (weclapp_lookup resource=user).'),
         customerId: refArg('Kunde (partyId).'),
@@ -147,6 +151,9 @@ export function registerTicketTools(ctx: ToolContext): void {
         defaultSort: '-startDate',
         filters: compact({
           'ticketId-eq': input.ticketId,
+          'projectId-eq': input.projectId,
+          'projectTaskId-eq': input.projectTaskId,
+          'taskId-eq': input.taskId,
           'userId-eq': userId,
           'customerId-eq': input.customerId,
           'startDate-ge': input.from ? toEpochMs(input.from, 'from') : undefined,
@@ -259,23 +266,32 @@ export function registerTicketTools(ctx: ToolContext): void {
   server.registerTool(
     'weclapp_book_time',
     {
-      title: 'Zeit auf Ticket buchen',
+      title: 'Zeit buchen',
       description:
-        'Bucht Arbeitszeit auf ein Ticket. Ohne userId wird auf den Nutzer des Tokens gebucht. Ohne start gilt: Arbeit endet jetzt. Nutzer, Datum, Dauer und Beschreibung vorher bestätigen lassen.',
+        'Bucht Arbeitszeit auf ein Ticket oder auf ein Projekt: entweder ticketId oder projectId bzw. projectTaskId angeben. ' +
+        'projectTaskId nennt den Projektschritt (weclapp_get_project); das Projekt ergibt sich daraus. Ohne articleId gilt der Artikel des Projektschritts, der den Stundensatz bestimmt. ' +
+        'Ohne userId wird auf den Nutzer des Tokens gebucht. Ohne start gilt: Arbeit endet jetzt. Ziel, Nutzer, Datum, Dauer und Beschreibung vorher bestätigen lassen.',
       inputSchema: z.object({
-        ticketId: idArg,
+        ticketId: refArg('Ticket, auf das gebucht wird (interne weclapp-ID, nicht die Ticketnummer).'),
+        projectId: refArg('Projekt, auf das gebucht wird (weclapp_search_projects). Kann entfallen, wenn projectTaskId angegeben ist.'),
+        projectTaskId: refArg('Projektschritt, auf den gebucht wird (weclapp_get_project oder weclapp_search_project_tasks).'),
         minutes: z.number().int().min(1).max(24 * 60).describe('Gearbeitete Minuten.'),
         description: z.string().min(1).describe('Was gemacht wurde.'),
         start: z.string().optional().describe('Beginn der Arbeit (ISO-8601, z. B. 2026-11-12T09:00:00+01:00; ohne Offset gilt die Zeitzone des Mandanten). Standard: jetzt minus Dauer.'),
         billableMinutes: z.number().int().min(0).optional().describe('Abrechenbare Minuten; Standard = minutes, 0 = nicht abrechenbar.'),
         userId: refArg('Nutzer, für den gebucht wird (weclapp_lookup resource=user). Standard: Token-Nutzer.'),
-        articleId: refArg('Dienstleistungsartikel, der den Stundensatz bestimmt.'),
+        articleId: refArg('Dienstleistungsartikel, der den Stundensatz bestimmt. Standard bei einem Projektschritt: dessen Artikel.'),
         fields: z.record(z.string(), z.unknown()).optional().describe('Weitere Felder der Zeitbuchung, z. B. {"placeOfServiceId": "12", "printOnPerformanceRecord": true}.'),
         dryRun: dryRunArg,
       }),
       annotations: CREATE,
     },
-    ({ ticketId, minutes, description, start, billableMinutes, userId, articleId, fields, dryRun }) => run(async () => {
+    ({ ticketId, projectId, projectTaskId, minutes, description, start, billableMinutes, userId, articleId, fields, dryRun }) => run(async () => {
+      const onProject = Boolean(projectId || projectTaskId);
+      if (Boolean(ticketId) === onProject) {
+        throw new Error('Genau ein Ziel angeben: ticketId (Ticket) oder projectId bzw. projectTaskId (Projekt, auf Wunsch mit Projektschritt).');
+      }
+      const target = onProject ? await projectTarget(client, projectId, projectTaskId) : undefined;
       const user = userId ?? (await client.currentUser()).id;
       const startDate = start ? toEpochMs(start, 'start') : Date.now() - minutes * 60_000;
       return auditedCreate(
@@ -285,12 +301,14 @@ export function registerTicketTools(ctx: ToolContext): void {
         {
           ...fields,
           ticketId,
+          projectId: target?.projectId,
+          projectTaskId: target?.projectTaskId,
           userId: user,
           startDate,
           durationSeconds: minutes * 60,
           billableDurationSeconds: (billableMinutes ?? minutes) * 60,
           description,
-          articleId,
+          articleId: articleId ?? target?.articleId,
         },
         dryRun,
       );

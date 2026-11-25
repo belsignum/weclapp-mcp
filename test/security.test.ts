@@ -484,6 +484,7 @@ describe('Massenänderungen, Protokollgröße und Undo-Wettläufe', () => {
   test('Schreiblimit: ein Batch mit 30 Schreibaktionen in einem Request kommt nicht durch', async () => {
     const mock = await startMockWeclapp();
     const mcp = await startMcp(mock.baseUrl, { maxWritesPerHour: 5 });
+    const before = mock.data.timeRecord.length;
     const anna = await connect(mcp.url, 'token-anna');
     const ben = await connect(mcp.url, 'token-ben');
     try {
@@ -494,7 +495,7 @@ describe('Massenänderungen, Protokollgröße und Undo-Wettläufe', () => {
         params: { name: 'weclapp_book_time', arguments: { ticketId: '20', minutes: 1, description: `Batch ${i}` } },
       }));
       await (await rawPost(mcp.url, { token: 'token-anna', body: JSON.stringify(batch) })).text();
-      assert.equal(mock.data.timeRecord.length, 1 + 5, 'nur das Stundenkontingent wird ausgeführt');
+      assert.equal(mock.data.timeRecord.length, before + 5, 'nur das Stundenkontingent wird ausgeführt');
 
       const blocked = await anna.callTool({ name: 'weclapp_update_ticket', arguments: { id: '20', fields: { subject: 'gekapert' } } });
       assert.equal(blocked.isError, true);
@@ -505,7 +506,7 @@ describe('Massenänderungen, Protokollgröße und Undo-Wettläufe', () => {
       json(await anna.callTool({ name: 'weclapp_update_ticket', arguments: { id: '20', fields: { subject: 'x' }, dryRun: true } }));
       const last = json(await anna.callTool({ name: 'weclapp_list_changes', arguments: { entity: 'timeRecord', limit: 1 } })).result[0];
       assert.equal(json(await anna.callTool({ name: 'weclapp_undo_change', arguments: { changeId: last.changeId } })).undone, true);
-      assert.equal(mock.data.timeRecord.length, 1 + 4);
+      assert.equal(mock.data.timeRecord.length, before + 4);
       json(await ben.callTool({ name: 'weclapp_book_time', arguments: { ticketId: '20', minutes: 1, description: 'Ben' } }));
     } finally {
       await anna.close();

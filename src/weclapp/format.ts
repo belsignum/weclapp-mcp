@@ -4,6 +4,15 @@
  */
 
 const DATE_KEY = /Date$/;
+/**
+ * Zeitstempel, deren Name nicht auf "Date" endet (laut OpenAPI-Spezifikation von weclapp, Format "timestamp"):
+ * Leistungszeitraum an Belegen und Positionen, Beginn und Ende einer Aufgabe, Datumswert eines Zusatzfelds.
+ */
+const OTHER_DATE_KEYS = new Set(['servicePeriodFrom', 'servicePeriodTo', 'dateFrom', 'dateTo', 'dateValue']);
+
+function isDateKey(key: string): boolean {
+  return DATE_KEY.test(key) || OTHER_DATE_KEYS.has(key);
+}
 /** Schlüssel, die beim Zuweisen den Prototyp eines Objekts verändern könnten. */
 const UNSAFE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 /** Größter Zeitwert, den ein Date darstellen kann. */
@@ -77,14 +86,14 @@ function toIso(epochMs: number): string {
   return `${new Date(epochMs + offset).toISOString().slice(0, -1)}${offset < 0 ? '-' : '+'}${pad(minutes / 60)}:${pad(minutes % 60)}`;
 }
 
-/** Ersetzt Epoch-Millisekunden in Feldern auf "...Date" rekursiv durch ISO-8601-Strings. */
+/** Ersetzt Epoch-Millisekunden in Datumsfeldern rekursiv durch ISO-8601-Strings. */
 export function datesToIso(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(datesToIso);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
       if (UNSAFE_KEYS.has(key)) continue;
-      out[key] = DATE_KEY.test(key) && typeof v === 'number' && Math.abs(v) <= MAX_EPOCH_MS ? toIso(v) : datesToIso(v);
+      out[key] = isDateKey(key) && typeof v === 'number' && Math.abs(v) <= MAX_EPOCH_MS ? toIso(v) : datesToIso(v);
     }
     return out;
   }
@@ -137,14 +146,14 @@ export function toEpochMsInclusive(value: string, field = 'Datum'): number {
   return wallTimeToEpochMs(Date.UTC(year, month - 1, day + 1)) - 1;
 }
 
-/** Wandelt ISO-Strings in Feldern auf "...Date" rekursiv in Epoch-Millisekunden (für Schreibzugriffe). */
+/** Wandelt ISO-Strings in Datumsfeldern rekursiv in Epoch-Millisekunden (für Schreibzugriffe). */
 export function datesFromIso(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(datesFromIso);
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, v] of Object.entries(value)) {
       if (UNSAFE_KEYS.has(key)) continue;
-      out[key] = DATE_KEY.test(key) && typeof v === 'string' && v.trim() !== '' ? toEpochMs(v, key) : datesFromIso(v);
+      out[key] = isDateKey(key) && typeof v === 'string' && v.trim() !== '' ? toEpochMs(v, key) : datesFromIso(v);
     }
     return out;
   }

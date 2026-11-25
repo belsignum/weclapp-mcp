@@ -8,6 +8,7 @@ import { registerChangeTools } from './tools/changes.ts';
 import { registerContractTools } from './tools/contracts.ts';
 import { registerInvoiceTools } from './tools/invoices.ts';
 import { registerLookupTools } from './tools/lookup.ts';
+import { registerProjectTools } from './tools/projects.ts';
 import { registerTicketTools } from './tools/tickets.ts';
 
 export const SERVER_INFO = { name: 'weclapp-mcp', version: '0.2.0' } as const;
@@ -23,7 +24,7 @@ export interface ServerOptions {
   timeZone?: string;
 }
 
-const INSTRUCTIONS = `Zugriff auf weclapp (ERP): Artikel, Ausgangsrechnungen, Helpdesk-Tickets mit Kommentaren und Zeitbuchung, Verträge.
+const INSTRUCTIONS = `Zugriff auf weclapp (ERP): Artikel, Ausgangsrechnungen, Helpdesk-Tickets mit Kommentaren und Zeitbuchung, Verträge, Projekte mit ihren Projektschritten.
 - Such-Tools liefern eine kompakte Übersicht; Details mit den get-Tools lesen.
 - IDs statt Namen: Nutzer, Status, Einheiten usw. mit weclapp_lookup auflösen, Kunden mit weclapp_search_parties.
 - Dauer in weclapp-Feldern ist in Sekunden.
@@ -50,6 +51,7 @@ export function createWeclappServer(client: WeclappClient, options: ServerOption
   registerInvoiceTools(context);
   registerTicketTools(context);
   registerContractTools(context);
+  registerProjectTools(context);
   registerChangeTools(context);
   return server;
 }
