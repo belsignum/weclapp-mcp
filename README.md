@@ -225,9 +225,13 @@ Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit No
 
 ```bash
 node scripts/smoke-article.ts
+node scripts/smoke-ticket.ts
 ```
 
-Das Skript fragt Mandant und Token ab (den Token verdeckt), startet den Server lokal und legt über die MCP-Tools einen inaktiven Testartikel an: erst als Probelauf, dann nach Rückfrage wirklich. Auf Wunsch löscht es ihn über `weclapp_undo_change` wieder. Das Protokoll landet in `./audit`.
+Beide Skripte fragen Mandant und Token ab (den Token verdeckt), starten den Server lokal und arbeiten über die MCP-Tools: erst als Probelauf, dann nach Rückfrage wirklich. Das Protokoll landet in `./audit`.
+
+- `smoke-article.ts` legt einen inaktiven Testartikel an und löscht ihn auf Wunsch über `weclapp_undo_change` wieder.
+- `smoke-ticket.ts` legt ein Test-Ticket an, dir zugewiesen und mit abgeschalteten E-Mail-Vorlagen. Den Kunden wählst du aus, am besten die eigene Firma oder einen Testkunden. Das Skript zeigt, ob weclapp nach dem Anlegen selbst etwas am Ticket ändert, und löscht es auf Wunsch wieder; klappt das nicht, bietet es an, das Ticket zu schließen. Die Ticketnummer ist danach verbraucht.
 
 ## Lizenz
 
