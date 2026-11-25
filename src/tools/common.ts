@@ -100,39 +100,31 @@ export interface SearchInput {
 }
 
 /**
- * Listet Datensätze. `alternatives` ermöglicht eine ODER-Suche (z. B. Name ODER Nummer):
- * jede Variante wird parallel abgefragt und das Ergebnis nach id zusammengeführt.
+ * Listet Datensätze. `anyOf` ist eine ODER-Suche (z. B. Name ODER Nummer): mindestens einer dieser Filter muss passen.
+ *
+ * Die ODER-Verknüpfung übernimmt weclapp selbst, über das Präfix "or-" (API-Doku, Abschnitt '"Or" condition filtering').
+ * Nur so blättert und sortiert weclapp über die ganze Treffermenge. Je Variante einzeln abzufragen und die Seiten
+ * zusammenzulegen verliert Treffer: was beim Kürzen auf die Seitengröße wegfällt, kommt auf keiner späteren Seite wieder.
  */
 export async function search(
   client: WeclappClient,
   entity: string,
   input: SearchInput,
-  options: { filters?: Record<string, string>; alternatives?: Array<Record<string, string>>; compactFields: string; defaultSort?: string; extra?: ListOptions['extra'] },
+  options: { filters?: Record<string, string>; anyOf?: Record<string, string>; compactFields: string; defaultSort?: string; extra?: ListOptions['extra'] },
 ) {
   const page = input.page ?? 1;
   const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
-  const base: ListOptions = {
+  const anyOf = Object.fromEntries(Object.entries(options.anyOf ?? {}).map(([key, value]) => [`or-${key}`, value]));
+  const response = await client.list<Entity>(entity, {
     page,
     pageSize,
     sort: checkSort(input.sort) ?? options.defaultSort,
     properties: input.allFields ? undefined : options.compactFields,
     extra: options.extra,
-  };
-  const filters = { ...options.filters, ...parseFilter(input.filter) };
-  const variants = options.alternatives?.length ? options.alternatives : [{}];
-
-  const responses = await Promise.all(variants.map((alt) => client.list<Entity>(entity, { ...base, filters: { ...filters, ...alt } })));
-  const seen = new Set<string>();
-  const merged: Entity[] = [];
-  for (const response of responses) {
-    for (const item of response.result ?? []) {
-      if (seen.has(item.id)) continue;
-      seen.add(item.id);
-      merged.push(item);
-    }
-  }
-  const hasMore = responses.some((r) => (r.result?.length ?? 0) >= pageSize);
-  return { page, pageSize, count: Math.min(merged.length, pageSize), hasMore, result: merged.slice(0, pageSize) };
+    filters: { ...options.filters, ...parseFilter(input.filter), ...anyOf },
+  });
+  const result = response.result ?? [];
+  return { page, pageSize, count: result.length, hasMore: result.length >= pageSize, result };
 }
 
 // ---- Schreiben mit Protokoll ----------------------------------------------

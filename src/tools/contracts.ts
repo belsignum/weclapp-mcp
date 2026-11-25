@@ -33,7 +33,7 @@ export function registerContractTools(ctx: ToolContext): void {
           'partyId-eq': input.partyId,
           'contractStatus-eq': input.contractStatus,
         }),
-        alternatives: input.query ? [{ 'name-ilike': contains(input.query) }, { 'contractNumber-ilike': contains(input.query) }] : undefined,
+        anyOf: input.query ? { 'name-ilike': contains(input.query), 'contractNumber-ilike': contains(input.query) } : undefined,
       }),
     ),
   );

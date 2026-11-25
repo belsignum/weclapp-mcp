@@ -99,7 +99,7 @@ export function registerLookupTools({ server, client }: ToolContext): void {
           'customer-eq': input.customer,
           'supplier-eq': input.supplier,
         }),
-        alternatives: input.query ? [{ 'company-ilike': contains(input.query) }, { 'lastName-ilike': contains(input.query) }] : undefined,
+        anyOf: input.query ? { 'company-ilike': contains(input.query), 'lastName-ilike': contains(input.query) } : undefined,
       }),
     ),
   );

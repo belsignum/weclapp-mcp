@@ -87,12 +87,36 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     mock.requests.length = 0;
     const data = json(await anna.callTool({ name: 'weclapp_search_articles', arguments: { query: 'wartung', active: true } }));
     const queries = mock.requests.filter((r) => r.path === '/article').map((r) => r.query);
-    assert.equal(queries.length, 2);
-    assert.ok(queries.some((q) => q['name-ilike'] === '%wartung%'));
-    assert.ok(queries.some((q) => q['articleNumber-ilike'] === '%wartung%'));
-    assert.ok(queries.every((q) => q['active-eq'] === 'true' && q.properties?.includes('articleNumber')));
-    assert.equal(data.result.length, 1, 'Treffer aus beiden Abfragen werden zusammengeführt');
+    assert.equal(queries.length, 1, 'eine Abfrage: die ODER-Verknüpfung übernimmt weclapp');
+    assert.equal(queries[0]['or-name-ilike'], '%wartung%');
+    assert.equal(queries[0]['or-articleNumber-ilike'], '%wartung%');
+    assert.ok(queries[0]['active-eq'] === 'true' && queries[0].properties?.includes('articleNumber'));
+    assert.equal(data.result.length, 1);
     assert.equal(data.result[0].lastModifiedDate, '2026-01-01T00:00:00.000Z');
+  });
+
+  test('ODER-Suche über mehrere Seiten: kein Treffer geht verloren, die Sortierung gilt für alle', async () => {
+    const pad = (n: number) => String(n).padStart(3, '0');
+    const own = await startMockWeclapp();
+    const server = await startMcp(own.baseUrl);
+    const client = await connect(server.url, 'token-anna');
+    try {
+      // 20 Artikel passen im Namen, 20 andere in der Nummer
+      own.data.article = [
+        ...Array.from({ length: 20 }, (_, i) => ({ id: String(100 + i), articleNumber: `Z-${pad(i)}`, name: `Kabel ${pad(i)}` })),
+        ...Array.from({ length: 20 }, (_, i) => ({ id: String(200 + i), articleNumber: `KABEL-${pad(i)}`, name: `Stecker ${pad(i)}` })),
+      ];
+      const first = json(await client.callTool({ name: 'weclapp_search_articles', arguments: { query: 'kabel' } }));
+      const second = json(await client.callTool({ name: 'weclapp_search_articles', arguments: { query: 'kabel', page: 2 } }));
+      assert.deepEqual([first.count, first.hasMore, second.count, second.hasMore], [25, true, 15, false]);
+      const numbers = [...first.result, ...second.result].map((article: { articleNumber: string }) => article.articleNumber);
+      assert.equal(new Set(numbers).size, 40, 'alle 40 Treffer, keiner doppelt');
+      assert.deepEqual(numbers, [...numbers].sort(), 'nach Artikelnummer sortiert, über beide Seiten hinweg');
+    } finally {
+      await client.close();
+      await server.close();
+      await own.close();
+    }
   });
 
   test('Artikel anlegen: Standard-Steuersatz wird gesetzt', async () => {

@@ -60,7 +60,7 @@ export function registerArticleTools(ctx: ToolContext): void {
           'articleType-eq': input.articleType,
           'articleCategoryId-eq': input.articleCategoryId,
         }),
-        alternatives: input.query ? [{ 'name-ilike': contains(input.query) }, { 'articleNumber-ilike': contains(input.query) }] : undefined,
+        anyOf: input.query ? { 'name-ilike': contains(input.query), 'articleNumber-ilike': contains(input.query) } : undefined,
       }),
     ),
   );
