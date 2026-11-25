@@ -64,7 +64,7 @@ export const fieldsArg = (examples: string) =>
     .describe(
       `Zu ändernde Felder mit ihren weclapp-Namen, z. B. ${examples}. Nur geänderte Felder senden; nicht gesendete Felder bleiben unverändert. ` +
         'Listenfelder werden als Ganzes ersetzt: Einträge, die fehlen, löscht weclapp. Bestehende Einträge mit ihrer "id" mitschicken. ' +
-        'Datumsfelder (Name endet auf "Date") als ISO-8601-String.',
+        'Datumsfelder (Name endet auf "Date", dazu servicePeriodFrom/To, dateFrom/To, dateValue) als ISO-8601-String.',
     );
 
 // ---- Ergebnisse -----------------------------------------------------------
@@ -110,7 +110,15 @@ export async function search(
   client: WeclappClient,
   entity: string,
   input: SearchInput,
-  options: { filters?: Record<string, string>; anyOf?: Record<string, string>; compactFields: string; defaultSort?: string; extra?: ListOptions['extra'] },
+  options: {
+    filters?: Record<string, string>;
+    /** Filter, die der freie `filter` des Aufrufers nicht überschreiben kann (grenzen ein Tool auf seinen Gegenstand ein). */
+    fixed?: Record<string, string>;
+    anyOf?: Record<string, string>;
+    compactFields: string;
+    defaultSort?: string;
+    extra?: ListOptions['extra'];
+  },
 ) {
   const page = input.page ?? 1;
   const pageSize = input.pageSize ?? DEFAULT_PAGE_SIZE;
@@ -121,7 +129,7 @@ export async function search(
     sort: checkSort(input.sort) ?? options.defaultSort,
     properties: input.allFields ? undefined : options.compactFields,
     extra: options.extra,
-    filters: { ...options.filters, ...parseFilter(input.filter), ...anyOf },
+    filters: { ...options.filters, ...parseFilter(input.filter), ...anyOf, ...options.fixed },
   });
   const result = response.result ?? [];
   return { page, pageSize, count: result.length, hasMore: result.length >= pageSize, result };

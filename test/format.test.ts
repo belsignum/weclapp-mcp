@@ -57,3 +57,14 @@ test('loadWeclappConfig: sichere Standardwerte und Prüfung der Basis-URL', () =
   assert.throws(() => loadWeclappConfig({ WECLAPP_BASE_URL: 'https://user:pw@acme.weclapp.com/webapp/api/v2' }), /Zugangsdaten/);
   assert.equal(loadWeclappConfig({ WECLAPP_BASE_URL: 'http://127.0.0.1:1234/webapp/api/v2' }).baseUrl, 'http://127.0.0.1:1234/webapp/api/v2');
 });
+
+test('Datumsfelder ohne "Date" am Ende: Leistungszeitraum, Aufgabenzeitraum, Zusatzfeld', () => {
+  const day = 86_400_000;
+  assert.deepEqual(datesToIso({ servicePeriodFrom: 0, dateTo: day, customAttributes: [{ attributeDefinitionId: '7', dateValue: day }], plannedEffort: 3600 }), {
+    servicePeriodFrom: '1970-01-01T00:00:00.000Z',
+    dateTo: '1970-01-02T00:00:00.000Z',
+    customAttributes: [{ attributeDefinitionId: '7', dateValue: '1970-01-02T00:00:00.000Z' }],
+    plannedEffort: 3600,
+  });
+  assert.deepEqual(datesFromIso({ dateFrom: '1970-01-02', items: [{ servicePeriodTo: '1970-01-02T00:00:00Z' }] }), { dateFrom: day, items: [{ servicePeriodTo: day }] });
+});
