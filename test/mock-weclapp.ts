@@ -32,6 +32,10 @@ function seed(): Record<string, Row[]> {
       { id: '2', name: 'In Arbeit', internalTicketStatus: 'IN_PROGRESS' },
       { id: '3', name: 'Erledigt', internalTicketStatus: 'CLOSED' },
     ],
+    ticketPriority: [
+      { id: '8', name: 'Hoch', active: true, positionNumber: 1 },
+      { id: '9', name: 'Normal', active: true, positionNumber: 2 },
+    ],
     comment: [{ id: '30', entityName: 'ticket', entityId: '20', comment: 'Toner getauscht', privateComment: true, publicComment: false }],
     timeRecord: [{ id: '40', ticketId: '20', userId: '100', startDate: 1767225600000, durationSeconds: 1800, billableDurationSeconds: 1800 }],
     contract: [
@@ -87,17 +91,38 @@ export async function startMockWeclapp() {
       const item = rows.find((e) => e.id === single[2]);
       return item ? send(200, item) : send(404, { title: 'Not Found', status: 404, detail: `${entity} ${single[2]} not found` });
     }
-    if (req.method === 'GET' && list) return send(200, { result: rows });
+    if (req.method === 'GET' && list) {
+      // Filter "feld-eq=wert" und die Zuordnung von Kommentaren (entityName, entityId) wirken wie in weclapp; andere Operatoren ignoriert der Nachbau
+      const wanted = [...url.searchParams].flatMap(([key, value]) =>
+        key.endsWith('-eq') ? [[key.slice(0, -3), value]] : entity === 'comment' && (key === 'entityName' || key === 'entityId') ? [[key, value]] : [],
+      );
+      return send(200, { result: rows.filter((row) => wanted.every(([field, value]) => String(row[field]) === value)) });
+    }
     if (req.method === 'POST' && list) {
       const body = JSON.parse(raw || '{}');
-      if (entity === 'article' && !body.articleNumber) {
-        return send(400, { title: 'validation error', status: 400, validationErrors: [{ location: 'articleNumber', detail: 'must not be empty' }] });
+      const invalid = (location: string, detail: string) =>
+        send(400, { title: 'entity validation failed', status: 400, detail, validationErrors: [{ location, detail, title: detail }] });
+      if (entity === 'article' && !body.articleNumber) return invalid('articleNumber', 'must not be empty');
+      if (entity === 'ticket') {
+        if (!body.subject) return invalid('subject', 'must not be empty');
+        if (body.partyId !== undefined && !data.party.some((party) => party.id === body.partyId)) return invalid('partyId', 'referenced entity not found');
+        // Wie am echten Mandanten im Probelauf beobachtet (24.11.2026): keine Standard-Priorität, und ohne Statusangabe
+        // gilt "nicht zugewiesen", wozu keine Zuweisung passt
+        if (!body.ticketPriorityId) return invalid('ticketPriorityId', 'value must not be empty');
+        const status = data.ticketStatus.find((entry) => entry.id === (body.ticketStatusId ?? '1'));
+        if (body.assignedUserId != null && status?.internalTicketStatus === 'UNASSIGNED') {
+          return invalid('assignedUserId', 'assigned user must be null for internal ticket status: UNASSIGNED');
+        }
       }
-      const created: Row = { ...body, id: String(nextId), version: '0' };
-      if (!dryRun) {
-        nextId += 1;
-        rows.push(created);
-      }
+      // Status, Kanal und billable füllt weclapp selbst, wenn sie fehlen (ebenfalls im Probelauf beobachtet)
+      const defaults = entity === 'ticket' ? { ticketStatusId: '1', ticketChannelId: '12', billable: true } : {};
+      // Im Probelauf antwortet weclapp mit 200 und ohne id, version, createdDate und lastModifiedDate (API-Doku, "Dry-Run"),
+      // beim Ticket auch ohne Ticketnummer
+      if (dryRun) return send(200, { ...defaults, ...body });
+      if (entity === 'ticket') Object.assign(defaults, { ticketNumber: `T-${nextId}` });
+      const created: Row = { ...defaults, ...body, id: String(nextId), version: '0' };
+      nextId += 1;
+      rows.push(created);
       return send(201, created);
     }
     if (req.method === 'PUT' && single) {

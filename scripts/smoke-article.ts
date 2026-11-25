@@ -10,93 +10,15 @@
  * Prozesses und wird nie ausgegeben. Das Änderungsprotokoll landet in WECLAPP_AUDIT_DIR
  * (Standard: ./audit).
  */
-import type { AddressInfo } from 'node:net';
-import { createInterface } from 'node:readline/promises';
-import { Writable } from 'node:stream';
-import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
-import { AuditLog } from '../src/audit.ts';
-import { loadWeclappConfig } from '../src/config.ts';
-import { createHttpServer } from '../src/http.ts';
-
-let muted = false;
-const output = new Writable({
-  write(chunk, _encoding, done) {
-    if (!muted) process.stdout.write(chunk);
-    done();
-  },
-});
-const rl = createInterface({ input: process.stdin, output, terminal: process.stdin.isTTY === true });
-
-const say = (line = '') => process.stdout.write(`${line}\n`);
-
-async function ask(question: string): Promise<string> {
-  return (await rl.question(question)).trim();
-}
-
-/** Eingabe ohne Echo, damit der Token weder auf dem Bildschirm noch im Terminal-Verlauf steht. */
-async function askHidden(question: string): Promise<string> {
-  process.stdout.write(question);
-  muted = true;
-  try {
-    return (await rl.question('')).trim();
-  } finally {
-    muted = false;
-    process.stdout.write('\n');
-  }
-}
-
-async function confirm(question: string): Promise<boolean> {
-  return /^(j|ja|y|yes)$/i.test(await ask(`${question} [j/N] `));
-}
-
-type Outcome = { ok: true; data: any } | { ok: false; error: string };
-
-async function call(client: Client, name: string, args: Record<string, unknown> = {}): Promise<Outcome> {
-  const result = await client.callTool({ name, arguments: args });
-  const text = (result.content as Array<{ text?: string }>)[0]?.text ?? '';
-  if (result.isError) return { ok: false, error: text };
-  return { ok: true, data: JSON.parse(text) };
-}
-
-function must(step: string, outcome: Outcome): any {
-  if (!outcome.ok) throw new Error(`${step}: ${outcome.error}`);
-  return outcome.data;
-}
+import { ask, call, confirm, must, runSmoke, say, startSession } from './smoke-common.ts';
 
 async function main(): Promise<void> {
   say('Rauchtest: Testartikel in weclapp anlegen');
   say('=========================================');
 
-  const tenant = process.env.WECLAPP_TENANT?.trim() || (await ask('Mandant (der Teil vor .weclapp.com): '));
-  const config = loadWeclappConfig({ WECLAPP_TENANT: tenant, WECLAPP_BASE_URL: process.env.WECLAPP_BASE_URL });
-  say(`Ziel: ${config.baseUrl}`);
-
-  const token = process.env.WECLAPP_TOKEN?.trim() || (await askHidden('weclapp-API-Token (Eingabe bleibt unsichtbar): '));
-  if (!token) throw new Error('Kein Token eingegeben.');
-
-  const auditDir = process.env.WECLAPP_AUDIT_DIR?.trim() || './audit';
-  const audit = await AuditLog.open(auditDir);
-  const { server, close } = createHttpServer({
-    baseUrl: config.baseUrl,
-    readOnly: false,
-    allowPublicComments: false,
-    audit,
-    allowedHosts: [],
-    log: () => {},
-  });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const { port } = server.address() as AddressInfo;
-  const client = new Client({ name: 'smoke-article', version: '1.0.0' });
+  const { client, close } = await startSession('smoke-article');
 
   try {
-    try {
-      await client.connect(
-        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp`), { requestInit: { headers: { Authorization: `Bearer ${token}` } } }),
-      );
-    } catch (error) {
-      throw new Error(`Anmeldung abgelehnt. Stimmen Mandant und Token? (${error instanceof Error ? error.message : String(error)})`);
-    }
-
     say();
     say('1. Wer bin ich?');
     const me = must('weclapp_whoami', await call(client, 'weclapp_whoami'));
@@ -163,16 +85,8 @@ async function main(): Promise<void> {
     const gone = await call(client, 'weclapp_get_article', { id });
     say(`   Rückgängig gemacht. Artikel noch vorhanden: ${gone.ok ? 'JA' : 'nein'}`);
   } finally {
-    await client.close().catch(() => {});
-    audit.close();
     await close();
   }
 }
 
-main()
-  .then(() => say('\nFertig.'))
-  .catch((error) => {
-    say(`\nAbgebrochen: ${error instanceof Error ? error.message : String(error)}`);
-    process.exitCode = 1;
-  })
-  .finally(() => rl.close());
+runSmoke(main);

@@ -7,6 +7,7 @@ import { READ, allFieldsArg, filterArg, pagingArgs, run, search, sortArg, type T
 const LOOKUP_RESOURCES = {
   user: 'id,firstName,lastName,email,status',
   ticketStatus: 'id,name,internalTicketStatus,positionNumber',
+  ticketPriority: 'id,name,active,positionNumber',
   ticketType: 'id,name,active,articleId',
   ticketCategory: 'id,name,active,parentTicketCategoryId',
   ticketChannel: '',
@@ -54,8 +55,7 @@ export function registerLookupTools({ server, client }: ToolContext): void {
     {
       title: 'Stammdaten nachschlagen',
       description:
-        'Liest Stammdaten-Listen, um einen Namen in die ID zu übersetzen, die andere Tools brauchen: Nutzer (Zuständige, Zeitbuchung), Ticketstatus, Tickettypen, Ticketkategorien, Ticketkanäle, SLAs, Pooling-Gruppen, Einheiten, Steuersätze, Artikelkategorien, Währungen, Vertragsarten, Kündigungsgründe, Abrechnungsgruppen, Leistungsorte und Kostenstellen. ' +
-        'Hinweis: Für Ticket-Prioritäten gibt es keinen eigenen API-Endpunkt; deren IDs stehen in bestehenden Tickets (ticketPriorityId).',
+        'Liest Stammdaten-Listen, um einen Namen in die ID zu übersetzen, die andere Tools brauchen: Nutzer (Zuständige, Zeitbuchung), Ticketstatus, Ticket-Prioritäten, Tickettypen, Ticketkategorien, Ticketkanäle, SLAs, Pooling-Gruppen, Einheiten, Steuersätze, Artikelkategorien, Währungen, Vertragsarten, Kündigungsgründe, Abrechnungsgruppen, Leistungsorte und Kostenstellen.',
       inputSchema: z.object({
         resource: z.enum(RESOURCE_NAMES).describe('Welche Liste gelesen wird.'),
         query: z.string().optional().describe('Optionaler Suchbegriff (Teilstring in Name, Vor-/Nachname, E-Mail oder Beschreibung).'),

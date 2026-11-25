@@ -1,7 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import * as z from 'zod';
 import { CHANGE_ID_PATTERN, type ChangeEntry } from '../audit.ts';
-import { WeclappError, type Entity } from '../weclapp/client.ts';
+import { WeclappError, type Entity, type WeclappClient } from '../weclapp/client.ts';
 import { toEpochMs } from '../weclapp/format.ts';
 import { READ, UPDATE, auditUser, auditedUpdate, dryRunArg, refArg, run, type ToolContext } from './common.ts';
 
@@ -51,6 +51,27 @@ function restoreValues(before: Record<string, unknown>, current: Entity): Record
     });
   }
   return out;
+}
+
+/** Was zu tun ist, wenn weclapp das Löschen eines angelegten Datensatzes ablehnt. */
+const DELETE_REFUSED: Record<string, string> = {
+  article: 'Ein bereits verwendeter Artikel lässt sich nicht löschen; stattdessen mit weclapp_update_article auf "active": false setzen.',
+  ticket: 'Lässt sich das Ticket nicht löschen, stattdessen mit weclapp_update_ticket schließen (ticketStatusId).',
+};
+
+/**
+ * Ein angelegtes Ticket wird nur gelöscht, solange nichts daran hängt. Zeitbuchungen und Kommentare sind eigene
+ * Datensätze: an der "version" des Tickets ist nicht sicher abzulesen, ob es inzwischen welche gibt.
+ */
+async function assertTicketUnused(client: WeclappClient, ticketId: string): Promise<void> {
+  const [timeRecords, comments] = await Promise.all([
+    client.list('timeRecord', { pageSize: 1, properties: 'id', filters: { 'ticketId-eq': ticketId } }),
+    client.list('comment', { pageSize: 1, extra: { entityName: 'ticket', entityId: ticketId } }),
+  ]);
+  const attached = [timeRecords.result?.length ? 'Zeitbuchungen' : '', comments.result?.length ? 'Kommentare' : ''].filter(Boolean);
+  if (attached.length > 0) {
+    throw new Error(`Abgebrochen: Am angelegten Ticket hängen bereits ${attached.join(' und ')}. Es wird nicht gelöscht; stattdessen mit weclapp_update_ticket schließen (ticketStatusId).`);
+  }
 }
 
 function summary(entry: ChangeEntry) {
@@ -105,8 +126,8 @@ export function registerChangeTools(ctx: ToolContext): void {
     {
       title: 'Änderung rückgängig machen',
       description:
-        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Zeitbuchungen, Kommentare oder Artikel wieder gelöscht. ' +
-        'Bricht ab, wenn der Datensatz seit der Änderung anders verändert wurde. Vorher dem Nutzer zeigen, was zurückgesetzt wird, und bestätigen lassen; dryRun: true zeigt eine Vorschau. ' +
+        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder gelöscht. ' +
+        'Bricht ab, wenn der Datensatz seit der Änderung anders verändert wurde oder an einem angelegten Ticket schon Zeitbuchungen oder Kommentare hängen. Vorher dem Nutzer zeigen, was zurückgesetzt wird, und bestätigen lassen; dryRun: true zeigt eine Vorschau. ' +
         'Ein bereits vom Kunden gesehener öffentlicher Kommentar lässt sich nur löschen, nicht ungesehen machen.',
       inputSchema: z.object({
         changeId: z.string().regex(CHANGE_ID_PATTERN, 'Erwartet wird eine changeId aus weclapp_list_changes.').describe('Die changeId aus weclapp_list_changes oder aus dem Ergebnis eines Schreib-Tools.'),
@@ -160,14 +181,16 @@ export function registerChangeTools(ctx: ToolContext): void {
           if (entry.versionAfter && current.version !== entry.versionAfter) {
             throw new Error('Abgebrochen: Der angelegte Datensatz wurde inzwischen verändert. Bitte manuell prüfen.');
           }
+          if (entity === 'ticket') await assertTicketUnused(client, entityId);
           if (dryRun) return { dryRun: true, wouldDelete: { entity, entityId } };
           ctx.writeBudget.take(me.id, 'undo');
           const id = await audit.begin({ user: me, tool: 'weclapp_undo_change', kind: 'delete', entity, entityId, before: current, versionBefore: current.version, undoes: entry.id });
           try {
             await client.delete(entity, entityId);
           } catch (error) {
-            await audit.end(id, { status: 'failed', error: error instanceof Error ? error.message : String(error) }).catch(() => {});
-            if (entity === 'article') throw new Error(`${error instanceof Error ? error.message : error} – Ein bereits verwendeter Artikel lässt sich nicht löschen; stattdessen mit weclapp_update_article auf "active": false setzen.`);
+            const reason = error instanceof Error ? error.message : String(error);
+            await audit.end(id, { status: 'failed', error: reason }).catch(() => {});
+            if (DELETE_REFUSED[entity]) throw new Error(`${reason} – ${DELETE_REFUSED[entity]}`);
             throw error;
           }
           await audit.end(id, { status: 'done' }).catch(() => {});

@@ -17,6 +17,7 @@ import {
   run,
   search,
   sortArg,
+  toWeclappBody,
   versionArg,
   type ToolContext,
 } from './common.ts';
@@ -32,6 +33,17 @@ export function registerTicketTools(ctx: ToolContext): void {
   async function openStatusIds(): Promise<string[]> {
     const statuses = await client.list<Entity>('ticketStatus', { pageSize: 200, properties: 'id,internalTicketStatus' });
     return statuses.result.filter((s) => !CLOSED_INTERNAL_STATUS.has(String(s.internalTicketStatus))).map((s) => s.id);
+  }
+
+  /**
+   * Status für ein Ticket, das schon beim Anlegen jemandem zugewiesen ist: der erste Status der Reihenfolge mit
+   * internem Status IN_PROGRESS (in weclapp meist "Zugewiesen"). Ohne Statusangabe trägt weclapp "nicht zugewiesen"
+   * ein und lehnt die Zuweisung dann ab (am echten Mandanten im Probelauf beobachtet, 24.11.2026).
+   */
+  async function statusForAssignedTicket(): Promise<string | undefined> {
+    const statuses = await client.list<Entity>('ticketStatus', { pageSize: 200, properties: 'id,internalTicketStatus,positionNumber' });
+    const position = (status: Entity) => (typeof status.positionNumber === 'number' ? status.positionNumber : Number.MAX_SAFE_INTEGER);
+    return statuses.result.filter((s) => s.internalTicketStatus === 'IN_PROGRESS').sort((a, b) => position(a) - position(b))[0]?.id;
   }
 
   server.registerTool(
@@ -145,6 +157,45 @@ export function registerTicketTools(ctx: ToolContext): void {
   );
 
   if (readOnly) return;
+
+  server.registerTool(
+    'weclapp_create_ticket',
+    {
+      title: 'Helpdesk-Ticket anlegen',
+      description:
+        'Legt ein neues Helpdesk-Ticket für einen Kunden an. Den Kunden (partyId) mit weclapp_search_parties suchen, IDs für Priorität, Kategorie, Status, Kanal und Nutzer mit weclapp_lookup auflösen. ' +
+        'weclapp verlangt neben Betreff und Kunde eine Priorität und, je nach Einstellung des Mandanten, eine Kategorie; Kanal und Status setzt es selbst, wenn sie fehlen. Was noch fehlt, nennt die Fehlermeldung. ' +
+        'Ohne assignedUserId wird das Ticket dem Nutzer des Tokens zugewiesen. Ein zugewiesenes Ticket braucht einen dazu passenden Status: fehlt ticketStatusId, setzt das Tool den ersten Status mit internem Status IN_PROGRESS (meist "Zugewiesen"). ' +
+        'Vor dem Anlegen Betreff, Kunde, Priorität, Zuweisung und alle weiteren Angaben dem Nutzer zeigen und auf seine Bestätigung warten; dryRun: true prüft die Angaben vorab, ohne etwas zu speichern. ' +
+        'Das Ergebnis enthält die Ticketnummer (ticketNumber) und eine changeId für weclapp_undo_change.',
+      inputSchema: z.object({
+        subject: z.string().trim().min(1).max(150).describe('Betreff (höchstens 150 Zeichen).'),
+        partyId: idArg.describe('Kunde, zu dem das Ticket gehört (weclapp_search_parties).'),
+        ticketPriorityId: idArg.describe('Priorität (weclapp_lookup resource=ticketPriority). Pflicht: weclapp setzt dafür keinen Standardwert.'),
+        description: z.string().optional().describe('Beschreibung des Anliegens (HTML erlaubt).'),
+        ticketCategoryId: refArg('Kategorie (weclapp_lookup resource=ticketCategory). Je nach Einstellung des Mandanten Pflicht.'),
+        ticketStatusId: refArg('Ticketstatus (weclapp_lookup resource=ticketStatus). Standard: bei Zuweisung der erste Status mit internem Status IN_PROGRESS, sonst der Standardstatus von weclapp ("nicht zugewiesen").'),
+        ticketChannelId: refArg('Kanal, über den das Anliegen kam (weclapp_lookup resource=ticketChannel). Standard: der Standardkanal von weclapp.'),
+        assignedUserId: refArg('Zugewiesener Nutzer (weclapp_lookup resource=user). Standard: Token-Nutzer. Für ein Ticket ohne Zuweisung in fields {"assignedUserId": null} senden.'),
+        contactId: refArg('Ansprechpartner beim Kunden (weclapp_search_parties).'),
+        billable: z.boolean().optional().describe('true = Ticket als abrechenbar kennzeichnen.'),
+        fields: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe('Weitere Ticketfelder mit ihren weclapp-Namen, z. B. {"ticketTypeId": "815", "contractId": "60", "solutionDueDate": "2026-12-01", "tags": ["Website"]}. Die Angaben oben haben Vorrang.'),
+        dryRun: dryRunArg,
+      }),
+      annotations: CREATE,
+    },
+    ({ fields, dryRun, ...known }) => run(async () => {
+      // Erst prüfen und umwandeln (z. B. Datumsangaben): ungültige Angaben sollen weclapp gar nicht erst erreichen
+      const ticket = toWeclappBody({ ...fields, ...known });
+      // Auch ein ausdrückliches null in "fields" gilt als Angabe: so bleibt ein Ticket ohne Zuweisung möglich
+      if (!('assignedUserId' in ticket)) ticket.assignedUserId = (await client.currentUser()).id;
+      if (ticket.assignedUserId != null && ticket.ticketStatusId == null) ticket.ticketStatusId = await statusForAssignedTicket();
+      return auditedCreate(ctx, 'weclapp_create_ticket', 'ticket', ticket, dryRun);
+    }),
+  );
 
   server.registerTool(
     'weclapp_update_ticket',

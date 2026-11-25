@@ -53,11 +53,11 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(status, 403);
   });
 
-  test('listet alle 21 Tools', async () => {
+  test('listet alle 22 Tools', async () => {
     const { tools } = await anna.listTools();
     const names = tools.map((t) => t.name).sort();
-    assert.equal(names.length, 21, names.join(', '));
-    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
+    assert.equal(names.length, 22, names.join(', '));
+    for (const name of ['weclapp_search_articles', 'weclapp_create_article', 'weclapp_update_article', 'weclapp_search_sales_invoices', 'weclapp_get_ticket', 'weclapp_create_ticket', 'weclapp_update_ticket', 'weclapp_book_time', 'weclapp_update_contract', 'weclapp_list_changes', 'weclapp_undo_change']) {
       assert.ok(names.includes(name), `${name} fehlt`);
     }
     const update = tools.find((t) => t.name === 'weclapp_update_ticket');
@@ -196,6 +196,14 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
   test('Stammdaten-Suche filtert nach Namen', async () => {
     const data = json(await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'unit', query: 'stun' } }));
     assert.deepEqual(data.result.map((u: { name: string }) => u.name), ['Stunde']);
+  });
+
+  test('Ticket-Prioritäten nachschlagen', async () => {
+    mock.requests.length = 0;
+    const data = json(await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'ticketPriority', query: 'norm' } }));
+    assert.deepEqual(data.result, [{ id: '9', name: 'Normal', active: true, positionNumber: 2 }]);
+    const request = mock.requests.find((r) => r.path === '/ticketPriority')!;
+    assert.equal(request.query.properties, 'id,name,active,positionNumber');
   });
 });
 

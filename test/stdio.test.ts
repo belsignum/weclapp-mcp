@@ -46,7 +46,7 @@ test('stdio-Start mit WECLAPP_AUDIT_DIR: Schreib-Tools mit lokalem Protokoll', a
         stderr: 'ignore',
       }),
     );
-    assert.equal((await client.listTools()).tools.length, 21);
+    assert.equal((await client.listTools()).tools.length, 22);
     const result = await client.callTool({ name: 'weclapp_update_ticket', arguments: { id: '20', fields: { subject: 'lokal geändert' } } });
     assert.ok(!result.isError);
     assert.equal((await readdir(dir)).length, 1);
