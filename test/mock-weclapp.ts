@@ -22,6 +22,51 @@ const USERS: Record<string, { id: string; firstName: string; lastName: string; e
 
 type Row = Record<string, unknown> & { id: string };
 
+interface Condition {
+  field: string;
+  operator: string;
+  value: string;
+}
+
+const OPERATORS = ['notilike', 'notlike', 'notnull', 'notin', 'ilike', 'like', 'null', 'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'in'];
+
+/** Zerlegt "feld-operator" bzw. "or-feld-operator" / "or<Gruppe>-feld-operator" (ODER-Gruppe). */
+function parseFilterKey(key: string): { group: string | undefined; field: string; operator: string } | undefined {
+  const operator = OPERATORS.find((candidate) => key.endsWith(`-${candidate}`));
+  if (!operator) return undefined;
+  const field = key.slice(0, -(operator.length + 1));
+  const or = /^or([A-Za-z0-9]*)-(.+)$/.exec(field);
+  return or ? { group: or[1], field: or[2], operator } : { group: undefined, field, operator };
+}
+
+function like(pattern: string, flags: string): RegExp {
+  const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/%/g, '.*').replace(/_/g, '.');
+  return new RegExp(`^${escaped}$`, flags);
+}
+
+function matches(row: Row, { field, operator, value }: Condition): boolean {
+  const actual = row[field];
+  const empty = actual === undefined || actual === null;
+  const list = () => (JSON.parse(value) as unknown[]).map(String);
+  switch (operator) {
+    case 'null': return empty;
+    case 'notnull': return !empty;
+    case 'eq': return !empty && String(actual) === value;
+    case 'ne': return empty || String(actual) !== value;
+    case 'lt': return !empty && Number(actual) < Number(value);
+    case 'gt': return !empty && Number(actual) > Number(value);
+    case 'le': return !empty && Number(actual) <= Number(value);
+    case 'ge': return !empty && Number(actual) >= Number(value);
+    case 'like': return !empty && like(value, '').test(String(actual));
+    case 'ilike': return !empty && like(value, 'i').test(String(actual));
+    case 'notlike': return empty || !like(value, '').test(String(actual));
+    case 'notilike': return empty || !like(value, 'i').test(String(actual));
+    case 'in': return !empty && list().includes(String(actual));
+    case 'notin': return empty || !list().includes(String(actual));
+    default: return true;
+  }
+}
+
 function seed(): Record<string, Row[]> {
   return {
     article: [{ id: '1', articleNumber: 'A-1000', name: 'Wartungsstunde', articleType: 'SERVICE', active: true, unitId: '7', version: '3', lastModifiedDate: 1767225600000 }],
@@ -92,11 +137,37 @@ export async function startMockWeclapp() {
       return item ? send(200, item) : send(404, { title: 'Not Found', status: 404, detail: `${entity} ${single[2]} not found` });
     }
     if (req.method === 'GET' && list) {
-      // Filter "feld-eq=wert" und die Zuordnung von Kommentaren (entityName, entityId) wirken wie in weclapp; andere Operatoren ignoriert der Nachbau
-      const wanted = [...url.searchParams].flatMap(([key, value]) =>
-        key.endsWith('-eq') ? [[key.slice(0, -3), value]] : entity === 'comment' && (key === 'entityName' || key === 'entityId') ? [[key, value]] : [],
-      );
-      return send(200, { result: rows.filter((row) => wanted.every(([field, value]) => String(row[field]) === value)) });
+      // Filter, ODER-Gruppen ("or-…"), Sortierung und Paging wirken wie in der API-Doku beschrieben,
+      // ebenso die Zuordnung von Kommentaren (entityName, entityId)
+      const all: Condition[] = [];
+      const anyOf = new Map<string, Condition[]>();
+      for (const [key, value] of url.searchParams) {
+        if (entity === 'comment' && (key === 'entityName' || key === 'entityId')) {
+          all.push({ field: key, operator: 'eq', value });
+          continue;
+        }
+        const parsed = parseFilterKey(key);
+        if (!parsed) continue;
+        const condition = { field: parsed.field, operator: parsed.operator, value };
+        if (parsed.group === undefined) all.push(condition);
+        else anyOf.set(parsed.group, [...(anyOf.get(parsed.group) ?? []), condition]);
+      }
+      let result = rows.filter((row) => all.every((c) => matches(row, c)) && [...anyOf.values()].every((group) => group.some((c) => matches(row, c))));
+      const sort = url.searchParams.get('sort');
+      if (sort) {
+        const keys = sort.split(',').map((part) => ({ field: part.replace(/^-/, ''), direction: part.startsWith('-') ? -1 : 1 }));
+        result = result.slice().sort((a, b) => {
+          for (const { field, direction } of keys) {
+            const [x, y] = [a[field] as string | number, b[field] as string | number];
+            if (x !== y) return (x < y ? -1 : 1) * direction;
+          }
+          return 0;
+        });
+      }
+      // Standard 100 Einträge, höchstens 1000 (API-Doku, "Pagination")
+      const pageSize = Math.min(Number(url.searchParams.get('pageSize') ?? 100), 1000);
+      const page = Number(url.searchParams.get('page') ?? 1);
+      return send(200, { result: result.slice((page - 1) * pageSize, page * pageSize) });
     }
     if (req.method === 'POST' && list) {
       const body = JSON.parse(raw || '{}');
