@@ -65,6 +65,8 @@ export function datesFromIso(value: unknown): unknown {
 }
 
 const FILTER_KEY = /^[A-Za-z][A-Za-z0-9_.]*-(eq|ne|lt|gt|le|ge|null|notnull|like|notlike|ilike|notilike|in|notin)$/;
+/** Operatoren ohne Wert: "feld-null" und "feld-notnull". */
+const WITHOUT_VALUE = /-(null|notnull)$/;
 
 /**
  * Zerlegt einen weclapp-Filterstring wie "name-ilike=%foo%&active-eq=true"
@@ -80,6 +82,15 @@ export function parseFilter(filter: string | undefined): Record<string, string> 
     const value = eq === -1 ? '' : part.slice(eq + 1).trim();
     if (!FILTER_KEY.test(key)) {
       throw new Error(`Ungültiger Filter "${key}". Erwartet: feld-operator=wert, z. B. "name-ilike=%abc%" (Operatoren: eq, ne, lt, gt, le, ge, like, ilike, notlike, notilike, in, notin, null, notnull).`);
+    }
+    if (WITHOUT_VALUE.test(key)) {
+      // weclapp wertet bei diesen Operatoren nur den Namen aus. Ein fester Wert sorgt dafür, dass der Parameter gesendet wird
+      result[key] = 'true';
+      continue;
+    }
+    if (value === '') {
+      const field = key.slice(0, key.lastIndexOf('-'));
+      throw new Error(`Filter "${key}" braucht einen Wert. Für leere Felder "${field}-null" verwenden, für gefüllte "${field}-notnull".`);
     }
     result[key] = value;
   }

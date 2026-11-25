@@ -193,6 +193,22 @@ describe('HTTP-Server mit Bearer-Weitergabe', () => {
     assert.equal(mock.requests.length, 0);
   });
 
+  test('Filter "null" und "notnull" erreichen weclapp auch ohne Wert', async () => {
+    // Das Ticket des Nachbaus hat keinen zugewiesenen Nutzer
+    for (const [filter, expected] of [['assignedUserId-null', 1], ['assignedUserId-null=', 1], ['assignedUserId-notnull', 0]] as const) {
+      mock.requests.length = 0;
+      const data = json(await anna.callTool({ name: 'weclapp_search_tickets', arguments: { filter } }));
+      const query = mock.requests.find((r) => r.path === '/ticket')!.query;
+      assert.equal(query[filter.replace('=', '')], 'true', `${filter} wird gesendet`);
+      assert.equal(data.count, expected, filter);
+    }
+    mock.requests.length = 0;
+    const empty = await anna.callTool({ name: 'weclapp_search_tickets', arguments: { filter: 'assignedUserId-eq=' } });
+    assert.equal(empty.isError, true);
+    assert.match(text(empty), /braucht einen Wert/);
+    assert.equal(mock.requests.length, 0);
+  });
+
   test('Stammdaten-Suche filtert nach Namen', async () => {
     const data = json(await anna.callTool({ name: 'weclapp_lookup', arguments: { resource: 'unit', query: 'stun' } }));
     assert.deepEqual(data.result.map((u: { name: string }) => u.name), ['Stunde']);
