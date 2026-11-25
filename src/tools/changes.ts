@@ -1,12 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
 import * as z from 'zod';
 import { CHANGE_ID_PATTERN, type ChangeEntry } from '../audit.ts';
-import { WeclappError, type Entity, type WeclappClient } from '../weclapp/client.ts';
+import { WeclappError, type Entity, type ListOptions, type WeclappClient } from '../weclapp/client.ts';
 import { toEpochMs } from '../weclapp/format.ts';
 import { READ, UPDATE, auditUser, auditedUpdate, dryRunArg, refArg, run, type ToolContext } from './common.ts';
 
 /** Datentypen, die über diesen Server geändert werden – nur diese lassen sich zurücksetzen. */
-const ENTITIES = ['article', 'ticket', 'contract', 'timeRecord', 'comment'] as const;
+const ENTITIES = ['article', 'ticket', 'contract', 'timeRecord', 'comment', 'project', 'projectTask'] as const;
 const ENTITY_SET = new Set<string>(ENTITIES);
 const MANAGED_KEYS = new Set(['version', 'createdDate', 'lastModifiedDate']);
 
@@ -57,20 +57,38 @@ function restoreValues(before: Record<string, unknown>, current: Entity): Record
 const DELETE_REFUSED: Record<string, string> = {
   article: 'Ein bereits verwendeter Artikel lässt sich nicht löschen; stattdessen mit weclapp_update_article auf "active": false setzen.',
   ticket: 'Lässt sich das Ticket nicht löschen, stattdessen mit weclapp_update_ticket schließen (ticketStatusId).',
+  project: 'Lässt sich das Projekt nicht löschen, stattdessen mit weclapp_update_project den Status ändern.',
+  projectTask: 'Lässt sich der Projektschritt nicht löschen, stattdessen mit weclapp_update_project_task den Status ändern.',
+};
+
+/** Wie der angelegte Datensatz in Meldungen heißt und was statt des Löschens zu tun ist. */
+const UNUSED_CHECK: Record<string, { name: string; instead: string }> = {
+  ticket: { name: 'Ticket', instead: 'stattdessen mit weclapp_update_ticket schließen (ticketStatusId)' },
+  project: { name: 'Projekt', instead: 'stattdessen mit weclapp_update_project den Status ändern' },
+  projectTask: { name: 'Projektschritt', instead: 'stattdessen mit weclapp_update_project_task den Status ändern' },
 };
 
 /**
- * Ein angelegtes Ticket wird nur gelöscht, solange nichts daran hängt. Zeitbuchungen und Kommentare sind eigene
- * Datensätze: an der "version" des Tickets ist nicht sicher abzulesen, ob es inzwischen welche gibt.
+ * Ein angelegtes Ticket, Projekt oder ein angelegter Projektschritt wird nur gelöscht, solange nichts daran hängt.
+ * Zeitbuchungen, Kommentare und Projektschritte sind eigene Datensätze: an der "version" ist nicht sicher abzulesen,
+ * ob es inzwischen welche gibt.
  */
-async function assertTicketUnused(client: WeclappClient, ticketId: string): Promise<void> {
-  const [timeRecords, comments] = await Promise.all([
-    client.list('timeRecord', { pageSize: 1, properties: 'id', filters: { 'ticketId-eq': ticketId } }),
-    client.list('comment', { pageSize: 1, extra: { entityName: 'ticket', entityId: ticketId } }),
-  ]);
-  const attached = [timeRecords.result?.length ? 'Zeitbuchungen' : '', comments.result?.length ? 'Kommentare' : ''].filter(Boolean);
+async function assertUnused(client: WeclappClient, entity: string, id: string): Promise<void> {
+  const check = UNUSED_CHECK[entity];
+  if (!check) return;
+  const exists = async (other: string, options: ListOptions) => ((await client.list(other, { pageSize: 1, properties: 'id', ...options })).result?.length ?? 0) > 0;
+  const attached: string[] = [];
+  if (entity === 'ticket') {
+    if (await exists('timeRecord', { filters: { 'ticketId-eq': id } })) attached.push('Zeitbuchungen');
+    if (await exists('comment', { properties: undefined, extra: { entityName: 'ticket', entityId: id } })) attached.push('Kommentare');
+  } else if (entity === 'project') {
+    if (await exists('timeRecord', { filters: { 'projectId-eq': id } })) attached.push('Zeitbuchungen');
+    if (await exists('projectTask', { filters: { 'projectId-eq': id } })) attached.push('Projektschritte');
+  } else if (entity === 'projectTask') {
+    if (await exists('timeRecord', { filters: { 'projectTaskId-eq': id } })) attached.push('Zeitbuchungen');
+  }
   if (attached.length > 0) {
-    throw new Error(`Abgebrochen: Am angelegten Ticket hängen bereits ${attached.join(' und ')}. Es wird nicht gelöscht; stattdessen mit weclapp_update_ticket schließen (ticketStatusId).`);
+    throw new Error(`Abgebrochen: Am angelegten ${check.name} hängen bereits ${attached.join(' und ')}. Es wird nicht gelöscht; ${check.instead}.`);
   }
 }
 
@@ -105,7 +123,7 @@ export function registerChangeTools(ctx: ToolContext): void {
         'Zeigt die Änderungen, die mit dem eigenen weclapp-Nutzer über diesen MCP-Server gemacht wurden (neueste zuerst), mit altem und neuem Stand der betroffenen Felder. ' +
         'Änderungen direkt in weclapp oder über andere Wege stehen nicht im Protokoll.',
       inputSchema: z.object({
-        entity: z.enum(ENTITIES).optional().describe('Nur Änderungen an diesem Datentyp.'),
+        entity: z.enum(ENTITIES).optional().describe('Nur Änderungen an diesem Datentyp (projectTask = Projektschritt).'),
         entityId: refArg('Nur Änderungen an diesem Datensatz.'),
         since: z.string().max(40).optional().describe('Nur Änderungen ab diesem Zeitpunkt (ISO-8601).'),
         limit: z.number().int().min(1).max(100).optional().describe('Maximale Anzahl (Standard 25).'),
@@ -126,8 +144,8 @@ export function registerChangeTools(ctx: ToolContext): void {
     {
       title: 'Änderung rückgängig machen',
       description:
-        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Tickets, Zeitbuchungen, Kommentare oder Artikel wieder gelöscht. ' +
-        'Bricht ab, wenn der Datensatz seit der Änderung anders verändert wurde oder an einem angelegten Ticket schon Zeitbuchungen oder Kommentare hängen. Vorher dem Nutzer zeigen, was zurückgesetzt wird, und bestätigen lassen; dryRun: true zeigt eine Vorschau. ' +
+        'Macht eine eigene Änderung aus dem Protokoll rückgängig: geänderte Felder werden auf den alten Stand gesetzt, angelegte Tickets, Zeitbuchungen, Kommentare, Artikel, Projekte oder Projektschritte wieder gelöscht. ' +
+        'Bricht ab, wenn der Datensatz seit der Änderung anders verändert wurde oder an einem angelegten Ticket, Projekt oder Projektschritt schon etwas hängt (Zeitbuchungen, Kommentare, Projektschritte). Vorher dem Nutzer zeigen, was zurückgesetzt wird, und bestätigen lassen; dryRun: true zeigt eine Vorschau. ' +
         'Ein bereits vom Kunden gesehener öffentlicher Kommentar lässt sich nur löschen, nicht ungesehen machen.',
       inputSchema: z.object({
         changeId: z.string().regex(CHANGE_ID_PATTERN, 'Erwartet wird eine changeId aus weclapp_list_changes.').describe('Die changeId aus weclapp_list_changes oder aus dem Ergebnis eines Schreib-Tools.'),
@@ -181,7 +199,7 @@ export function registerChangeTools(ctx: ToolContext): void {
           if (entry.versionAfter && current.version !== entry.versionAfter) {
             throw new Error('Abgebrochen: Der angelegte Datensatz wurde inzwischen verändert. Bitte manuell prüfen.');
           }
-          if (entity === 'ticket') await assertTicketUnused(client, entityId);
+          await assertUnused(client, entity, entityId);
           if (dryRun) return { dryRun: true, wouldDelete: { entity, entityId } };
           ctx.writeBudget.take(me.id, 'undo');
           const id = await audit.begin({ user: me, tool: 'weclapp_undo_change', kind: 'delete', entity, entityId, before: current, versionBefore: current.version, undoes: entry.id });
