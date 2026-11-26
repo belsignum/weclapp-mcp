@@ -13,6 +13,14 @@ Stand: 13.11.2026, Version 0.2.0, nach zwei Audits. Geprüft wurde der eigene Co
 - **Protokoll pro Nutzer.** `weclapp_list_changes` und `weclapp_undo_change` zeigen und ändern nur Einträge des eigenen weclapp-Nutzers.
 - **Schreiben ist gedeckelt.** Pro Nutzer sind höchstens 120 Schreibaktionen pro Stunde möglich (`WECLAPP_MAX_WRITES_PER_HOUR`), das Protokoll wächst höchstens auf 100 MB (`WECLAPP_AUDIT_MAX_MB`).
 
+## Abschottung des Containers
+
+Ziel: Wer über eine Lücke in diesem Code Befehle im Container ausführen kann, soll dort möglichst wenig vorfinden und möglichst nichts außerhalb erreichen.
+
+- **Laufzeit-Image ohne Shell und Paketmanager** (`gcr.io/distroless/nodejs24-debian13:nonroot`): Es gibt kein `sh`, kein `apk` oder `apt`, kein `wget`. Nachladen und Ausführen von Werkzeugen ist damit deutlich schwerer. Basis-Images sind per Digest festgelegt.
+- **Nutzer `nonroot` (65532)**, keine Capabilities, `no-new-privileges`, schreibgeschütztes Dateisystem; beschreibbar ist allein `/data`.
+- **Node Permission Model** (`--permission`): Der Prozess darf nur den Code unter `/app` und das Protokoll unter `/data` lesen und nur `/data` beschreiben. Kindprozesse, Worker, native Addons, WASI und der Inspector sind gesperrt. Das ist eine **zusätzliche Hürde, keine Sicherheitsgrenze**: Die Node-Dokumentation beschreibt es als Sicherheitsgurt für vertrauenswürdigen Code und sagt ausdrücklich, dass bösartiger Code es umgehen kann, etwa über einen Fehler in Node selbst. Netzwerkzugriffe beschränkt es unter Node 24 nicht (`--allow-net` gibt es erst ab Node 25).
+
 ## Erstes Audit vom 13.11.2026
 
 Jede Lücke wurde zuerst am laufenden Server nachgewiesen, dann geschlossen und mit einem Angriffstest in `test/security.test.ts` abgesichert.

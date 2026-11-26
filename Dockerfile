@@ -33,4 +33,4 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD ["/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3000/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
 # Der Einstiegspunkt des Images ist /nodejs/bin/node
-CMD ["dist/http.js"]
+CMD ["--permission", "--allow-fs-read=/app", "--allow-fs-read=/data", "--allow-fs-write=/data", "dist/http.js"]
