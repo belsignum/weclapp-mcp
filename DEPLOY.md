@@ -22,6 +22,8 @@ Der Gateway ist dasselbe Image wie der Server mit einem anderen Programm (`src/g
 
 Im Folgenden steht `mcp.example.com` für deine Domain und `8734` für den Port, den dein Panel anzeigt. Setze überall deine eigenen Werte ein.
 
+Läuft der Server bei dir schon in der älteren Form (ein Container, Image `node:24-alpine`, ohne Gateway), stellst du ihn mit Abschnitt 11 um.
+
 ## 0. Vorher klären: AGB und Freigabe des Hosters
 
 Lies die AGB deines Hosters, bevor du etwas einrichtest. Viele schränken ein:
@@ -287,9 +289,72 @@ Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. B
 | Antwort bricht nach etwa 60 s ab | Server und NGINX begrenzen einen Request auf rund 60 s. weclapp-Abfragen sind normalerweise viel schneller. |
 | `port is already allocated` | Ein anderer Prozess nutzt den Port, z. B. ein vergessener Header-Test: `docker stop weclapp-header-test`. |
 
+## 11. Umstellung einer bestehenden Installation auf distroless und Gateway
+
+Für Server, die vor diesem Umbau eingerichtet wurden: ein Container `weclapp-mcp` aus `node:24-alpine`, Port direkt am Server-Container. Danach laufen zwei Container (`weclapp-mcp`, `gateway`) in zwei Netzen, der Port hängt am Gateway. Für das Panel ändert sich nichts: Port, Domain und Zertifikat bleiben.
+
+Was sich ändert und warum ein Handgriff nötig ist: Der Server läuft jetzt als Nutzer `65532` statt `1000`. Das Änderungsprotokoll im Volume gehört aber noch `1000`. Ohne Umstellung startet der Server nicht (`EACCES … mkdir '/data/audit'`).
+
+Alle Schritte per SSH auf dem Server, im Ordner `~/weclapp-mcp`. Der Dienst ist zwischen Schritt 4 und 6 für etwa eine Minute nicht erreichbar.
+
+**1. Protokoll sichern** (auf deinem eigenen Rechner, wie in Schritt 9; funktioniert mit altem und neuem Image):
+
+```bash
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit -' > weclapp-audit-vor-umstellung.tar
+```
+
+**2. Stand merken**, damit du zurückkannst:
+
+```bash
+cd ~/weclapp-mcp && git rev-parse HEAD > ~/weclapp-mcp-vorher.txt
+```
+
+**3. Neuen Stand holen und bauen.** Der alte Container läuft dabei weiter:
+
+```bash
+cd ~/weclapp-mcp && git pull && docker compose build
+```
+
+**4. Alten Container entfernen.** Das Volume mit dem Protokoll bleibt (kein `-v`):
+
+```bash
+cd ~/weclapp-mcp && docker compose down
+```
+
+**5. Volume auf den neuen Nutzer umstellen.** Ein kurzlebiger `busybox`-Container ohne Netz ändert nur die Besitzer im Volume:
+
+```bash
+docker run --rm --network none -v weclapp-mcp_audit_data:/data busybox:1 chown -R 65532:65532 /data
+```
+
+**6. Starten:**
+
+```bash
+cd ~/weclapp-mcp && docker compose up -d
+```
+
+**7. Prüfen:** Schritt 5 (`docker compose ps`: beide Container `healthy`, die drei Logzeilen) und Schritt 6 von außen, einschließlich „Abschottung prüfen“. Mit `weclapp_list_changes` in einem Client siehst du, dass die alten Einträge noch da sind.
+
+**Zurück zum alten Stand**, falls etwas nicht läuft:
+
+```bash
+cd ~/weclapp-mcp && docker compose down && git checkout "$(cat ~/weclapp-mcp-vorher.txt)" && docker run --rm --network none -v weclapp-mcp_audit_data:/data busybox:1 chown -R 1000:1000 /data && docker compose up -d --build
+```
+
+`--build` ist dabei nötig: Ohne baut Compose das alte Image nicht neu und startet das neue, das mit dem zurückgestellten Volume nicht schreiben darf. Später wieder auf den aktuellen Stand: `git checkout main` und ab Schritt 3.
+
 ## Was getestet ist
 
-Lokal mit Docker getestet: `docker-compose.nginx.yml`, dahinter ein nachgebauter weclapp-Server, davor zwei NGINX. Der eine verhält sich wie ein Panel-Proxy mit NGINX-Standardeinstellungen (`Host: 127.0.0.1:<Port>`, kein `X-Forwarded-For`), der andere nutzt das Experten-Setup oben.
+**Stand 26.11.2026, distroless und Gateway.** Lokal mit Docker 29.3 (Docker Desktop, arm64), beide Compose-Varianten, dahinter der nachgebaute weclapp-Server:
+
+- NGINX mit Standardeinstellungen eines Panel-Proxys (`Host: 127.0.0.1:<Port>`, kein `X-Forwarded-For`) vor dem Gateway: `/health` mit `200`, `/mcp` ohne Token mit `401`, mit Token die Tool-Liste. Rate-Limit mit `false`: 10 × `401`, danach `429`, auch mit gefälschtem `X-Forwarded-For`.
+- Der Gateway reicht Header unverändert durch, `X-Forwarded-For` kommt beim Server so an, wie das NGINX es schickt (Test in `test/gateway.test.ts`). Die Bedeutung von `MCP_TRUST_PROXY` und die Tabellen aus Schritt 4 gelten deshalb weiter.
+- Container: `docker compose exec … sh` scheitert, Nutzer 65532, schreibgeschütztes Dateisystem außer `/data`, Permission Model, kein `/dev/shm`, Log auf 3 × 1 MB begrenzt. Das Protokoll entsteht mit `0600`.
+- Abschottung: Der Server-Container erreicht weder Dienste auf dem Host noch das Internet noch fremde Namen im DNS. Der Weg zum echten Mandanten über den Gateway funktioniert: ein ungültiger Token ergibt `401` von weclapp. Der Prüfbefehl aus Schritt 6 liefert das erwartete Ergebnis.
+- Umstellung aus Abschnitt 11, Schritt für Schritt mit einem Eintrag aus dem alten Image: Ohne `chown` startet der neue Server nicht, danach mit allen Einträgen; Schreiben geht. Der Rückweg mit `--build` startet wieder das alte Image als Nutzer 1000 mit allen Einträgen. Backup und Restore aus Schritt 9 mit den neuen Befehlen: Die Rechte (`0600`, Besitzer 65532) bleiben erhalten.
+- `scripts/container-check.sh` fasst diese Prüfungen zusammen und läuft bei jedem PR.
+
+**Stand 13.11.2026, vor dem Umbau** (ein Container, `node:24-alpine`). Zwei NGINX vor dem Server, einer wie ein Panel-Proxy, einer mit dem Experten-Setup oben:
 
 - In beiden Fällen: `/health` antwortet mit `200`, `/mcp` ohne Token mit `401`, mit fremdem `Origin` mit `403`. Mit Token liefert der Server die Tool-Liste. Bei 1,1 MB antwortet er mit `413`.
 - Rate-Limit mit `false`: 10 × `401`, danach `429`. Der bestätigte Token arbeitet weiter. Ein neuer Token von einer anderen gefälschten Adresse ist gesperrt, wie oben beschrieben.
@@ -297,6 +362,5 @@ Lokal mit Docker getestet: `docker-compose.nginx.yml`, dahinter ein nachgebauter
 - Experten-Setup mit `true`: Gefälschte Adressen helfen nicht, nach 10 Versuchen kommt `429`.
 - Der Header-Test aus Schritt 4 zeigt die drei typischen NGINX-Varianten (durchreichen, anhängen, überschreiben) so, wie die Tabelle sie beschreibt.
 - SSE-Ereignisse kamen auch durch einen NGINX mit Standard-Pufferung ohne Verzögerung an. Der Server sendet zusätzlich `X-Accel-Buffering: no`, damit NGINX auch bei strengerer Pufferung nichts zurückhält.
-- Container: schreibgeschütztes Dateisystem, keine Capabilities, Nutzer `node`, 1 CPU, 512 MB, 200 Prozesse, Log auf 3 × 1 MB begrenzt, Port nur auf `127.0.0.1`. Backup und Restore aus Schritt 9 funktionieren, die Dateirechte (`0600`) bleiben erhalten.
 
-Erst auf deinem Server prüfbar: was das Panel-NGINX tatsächlich schickt (Schritt 4), das Let's-Encrypt-Zertifikat, Docker ohne root (Limits, Neustart nach Reboot) und ausgehende Verbindungen zu weclapp.
+Erst auf deinem Server prüfbar: was das Panel-NGINX tatsächlich schickt (Schritt 4), das Let's-Encrypt-Zertifikat, Docker ohne root (Limits, Neustart nach Reboot), ob das interne Netz dort genauso abschottet (Prüfbefehl in Schritt 6) und ausgehende Verbindungen zu weclapp.
