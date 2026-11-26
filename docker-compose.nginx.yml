@@ -46,6 +46,8 @@ services:
     mem_limit: 512m
     # Auf geteilten oder verwalteten Servern den Rechner nicht übermäßig belasten
     cpus: 1.0
+    # Kein /dev/shm: bliebe trotz read_only beschreibbar (64 MB), Node braucht es nicht
+    ipc: none
     # Docker-Log begrenzen (der Server schreibt nur Start- und Fehlermeldungen, nie den Token)
     logging:
       driver: json-file
@@ -83,6 +85,8 @@ services:
     pids_limit: 50
     mem_limit: 128m
     cpus: 0.5
+    # Kein /dev/shm: bliebe trotz read_only beschreibbar (64 MB), Node braucht es nicht
+    ipc: none
     logging:
       driver: json-file
       options:

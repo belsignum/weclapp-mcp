@@ -4,7 +4,7 @@ import { spawn } from 'node:child_process';
 import { request } from 'node:http';
 import { connect as tcpConnect, createServer, type AddressInfo, type Server } from 'node:net';
 import { fileURLToPath } from 'node:url';
-import { createEgressProxy, createIngressForwarder, parseAllowList, parseTarget } from '../src/gateway.ts';
+import { createEgressProxy, createIngressForwarder, parseAllowList, parseTarget, throttledLog } from '../src/gateway.ts';
 import { connect } from './helpers.ts';
 import { startMockWeclapp } from './mock-weclapp.ts';
 
@@ -80,6 +80,17 @@ test('Gateway ausgehend: CONNECT nur zu freigegebenen Zielen, kein Klartext-HTTP
   } finally {
     await Promise.all([close(proxy), close(echo), close(other)]);
   }
+});
+
+test('Gateway: Log-Flut wird gebremst, die ersten Zeilen bleiben, der Rest wird gezählt', () => {
+  const lines: string[] = [];
+  let time = 0;
+  const log = throttledLog((m) => lines.push(m), 3, () => time);
+  for (let i = 0; i < 1000; i++) log(`abgelehnt ${i}`);
+  assert.deepEqual(lines, ['abgelehnt 0', 'abgelehnt 1', 'abgelehnt 2']);
+  time = 60_000;
+  log('abgelehnt neu');
+  assert.deepEqual(lines.slice(3), ['[gateway] 997 weitere Meldungen in der Minute davor nicht einzeln protokolliert', 'abgelehnt neu']);
 });
 
 test('Gateway ausgehend: nicht erreichbares Ziel ergibt 502, der Gateway läuft weiter', async () => {

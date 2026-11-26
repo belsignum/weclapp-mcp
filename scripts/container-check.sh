@@ -64,6 +64,8 @@ for service in weclapp-mcp gateway; do
   id=$(dc ps -q "$service")
   check "$service: Nutzer, Dateisystem, Capabilities" '65532:65532 true \[ALL\] *no-new-privileges*' \
     "$(docker inspect "$id" --format '{{.Config.User}} {{.HostConfig.ReadonlyRootfs}} {{.HostConfig.CapDrop}} {{.HostConfig.SecurityOpt}}')"
+  check "$service: kein /dev/shm, Log begrenzt" 'none 1m 3' \
+    "$(docker inspect "$id" --format '{{.HostConfig.IpcMode}} {{index .HostConfig.LogConfig.Config "max-size"}} {{index .HostConfig.LogConfig.Config "max-file"}}')"
 done
 cmdline='process.stdout.write(require("fs").readFileSync("/proc/1/cmdline","utf8").split("\0").join(" "))'
 check "Server läuft mit Permission Model" '*--permission --allow-fs-read=/app --allow-fs-read=/data --allow-fs-write=/data dist/http.js*' \

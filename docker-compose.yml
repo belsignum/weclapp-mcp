@@ -39,6 +39,14 @@ services:
       - no-new-privileges:true
     pids_limit: 200
     mem_limit: 512m
+    # Kein /dev/shm: bliebe trotz read_only beschreibbar (64 MB), Node braucht es nicht
+    ipc: none
+    # Docker-Log begrenzen: sonst kann, wer im Container Code ausführt, mit Ausgaben die Platte füllen
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
     networks: [backend]
 
   gateway:
@@ -61,6 +69,14 @@ services:
       - no-new-privileges:true
     pids_limit: 50
     mem_limit: 128m
+    # Kein /dev/shm: bliebe trotz read_only beschreibbar (64 MB), Node braucht es nicht
+    ipc: none
+    # Docker-Log begrenzen: sonst kann, wer im Container Code ausführt, mit Ausgaben die Platte füllen
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
     networks: [backend, default]
 
   caddy:
@@ -85,6 +101,12 @@ services:
       - no-new-privileges:true
     pids_limit: 200
     mem_limit: 256m
+    # Docker-Log begrenzen: sonst kann, wer im Container Code ausführt, mit Ausgaben die Platte füllen
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "3"
     networks: [backend, default]
 
 networks:

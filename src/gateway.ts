@@ -47,6 +47,28 @@ function printable(value: string | undefined): string {
   return (value ?? '').replace(/[^\x20-\x7e]/g, '?').slice(0, 100);
 }
 
+/**
+ * Höchstens `limit` Logzeilen pro Minute, der Rest wird gezählt und mit der nächsten Zeile zusammengefasst.
+ * Wer im Server-Container Code ausführt, kann sonst mit abgelehnten Anfragen das Log fluten (gemessen: rund 1 MB in 5 s):
+ * ohne Log-Limit von Docker bis die Platte voll ist, mit Limit so lange, bis die ersten, aufschlussreichen Zeilen verdrängt sind.
+ */
+export function throttledLog(log: (message: string) => void, limit = 20, now: () => number = Date.now): (message: string) => void {
+  let windowStart = Number.NEGATIVE_INFINITY;
+  let count = 0;
+  let suppressed = 0;
+  return (message) => {
+    const time = now();
+    if (time - windowStart >= 60_000) {
+      if (suppressed > 0) log(`[gateway] ${suppressed} weitere Meldungen in der Minute davor nicht einzeln protokolliert`);
+      windowStart = time;
+      count = 0;
+      suppressed = 0;
+    }
+    if (count++ < limit) log(message);
+    else suppressed++;
+  };
+}
+
 function closeBoth(a: Socket, b: Socket): void {
   a.destroy();
   b.destroy();
@@ -61,10 +83,13 @@ export interface EgressOptions {
   connectTimeoutMs?: number;
   /** Ein Tunnel ohne Daten in beide Richtungen wird nach dieser Zeit geschlossen (Standard 120 s). */
   idleTimeoutMs?: number;
+  /** Höchstens so viele Logzeilen pro Minute (Standard 20). */
+  logLimitPerMinute?: number;
+  now?: () => number;
 }
 
 export function createEgressProxy(options: EgressOptions): HttpServer {
-  const log = options.log ?? ((message: string) => console.error(message));
+  const log = throttledLog(options.log ?? ((message: string) => console.error(message)), options.logLimitPerMinute ?? 20, options.now);
   const connectTimeout = options.connectTimeoutMs ?? 10_000;
   const idleTimeout = options.idleTimeoutMs ?? 120_000;
 

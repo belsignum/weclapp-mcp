@@ -27,9 +27,15 @@ const FILES = ['docker-compose.yml', 'docker-compose.nginx.yml'];
 test('Compose: alle Container laufen eingeschränkt, auch der aus dem Internet erreichbare Caddy und der Gateway', async () => {
   for (const name of ['weclapp-mcp', 'gateway', 'caddy']) {
     const block = await service(name);
-    for (const setting of HARDENING) {
+    for (const setting of [...HARDENING, 'max-size:']) {
       assert.ok(block.includes(setting), `${name}: "${setting}" fehlt`);
     }
+  }
+});
+
+test('Compose: Server und Gateway ohne /dev/shm', async () => {
+  for (const file of FILES) {
+    for (const name of ['weclapp-mcp', 'gateway']) assert.match(await service(name, file), /^    ipc: none$/m, `${file}, ${name}`);
   }
 });
 
