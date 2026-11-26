@@ -47,3 +47,22 @@ test('Compose hinter vorhandenem NGINX: Port nur auf 127.0.0.1, X-Forwarded-For 
   assert.match(block, /MCP_TRUST_PROXY: \$\{MCP_TRUST_PROXY:-false\}/);
   assert.doesNotMatch(block, /^\s*expose:/m);
 });
+
+test('Dockerfile: Laufzeit-Image ohne Shell, Basis-Images per Digest, Laufzeitnutzer nonroot', async () => {
+  const dockerfile = await readFile(new URL('../Dockerfile', import.meta.url), 'utf8');
+  const images = [...dockerfile.matchAll(/^FROM (\S+)/gm)].map((m) => m[1]);
+  assert.equal(images.length, 2, 'Build- und Laufzeit-Stufe erwartet');
+  for (const image of images) assert.match(image, /:[\w.-]+@sha256:[0-9a-f]{64}$/, `${image}: Tag und Digest erwartet`);
+  assert.match(images[1], /^gcr\.io\/distroless\/nodejs24-debian\d+:nonroot@/);
+  assert.match(dockerfile, /npm ci --ignore-scripts/);
+
+  // Laufzeit-Stufe ohne Kommentarzeilen
+  const runtime = dockerfile.slice(dockerfile.lastIndexOf('\nFROM ')).replace(/^#.*\n/gm, '');
+  // distroless hat keine Shell: RUN, Shell-Form und wget gingen dort ins Leere
+  assert.doesNotMatch(runtime, /^RUN /m);
+  assert.doesNotMatch(runtime, /wget|curl/);
+  assert.match(runtime, /^HEALTHCHECK [^\n]*\\\n\s+CMD \["\/nodejs\/bin\/node",/m, 'Healthcheck in Exec-Form mit Node');
+  assert.match(runtime, /^CMD \[/m, 'CMD in Exec-Form');
+  assert.equal(runtime.match(/^USER .*$/gm)?.at(-1), 'USER 65532:65532');
+  assert.match(runtime, /^COPY --from=build --chown=65532:65532 \/out\/ \/$/m, '/data mit Besitzer nonroot aus der Build-Stufe');
+});

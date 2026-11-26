@@ -79,10 +79,10 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
 - **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
 - **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
-- **Auf dem VPS ansehen:**
+- **Auf dem VPS ansehen** (das Image hat keine Shell, deshalb kopiert `docker compose cp` die Dateien als tar-Archiv heraus):
 
 ```bash
-docker compose exec weclapp-mcp sh -c 'cat /data/audit/*.jsonl' | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
+docker compose cp weclapp-mcp:/data/audit - | tar -xOf - | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
 ```
 
 Änderungen direkt in der weclapp-Oberfläche stehen nicht im Protokoll. Der lokale Start (stdio) ist ohne `WECLAPP_AUDIT_DIR` nur lesend, damit keine verteilten Protokolle auf mehreren Geräten entstehen.

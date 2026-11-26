@@ -31,7 +31,7 @@ Ist etwas unklar, frag beim Support nach und lass dir die Antwort schriftlich ge
 1. Darf auf meinem Server ein Docker-Container dauerhaft laufen, der über die Panel-Option „Proxy auf App-Server/Port“ erreichbar ist? Es geht um einen kleinen Node.js-Dienst für mich allein: ein MCP-Server, der für KI-Clients auf die weclapp-API zugreift, mit höchstens 1 CPU und 512 MB RAM.
 2. Wie stellt ihr Docker bereit: `docker` und `docker compose` per SSH (rootless oder mit Gruppe `docker`), oder nur über das Panel? Darf ich Images aus einem Dockerfile selbst bauen?
 3. Startet mein Container nach einem Neustart des Servers wieder von selbst (bei rootless Docker: ist „linger“ für meinen Nutzer aktiv)?
-4. Darf der Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? Für den Build kommen Docker Hub und die npm-Registry dazu.
+4. Darf der Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? Für den Build kommen Docker Hub, `gcr.io` (Basis-Image) und die npm-Registry dazu.
 5. Darf ich im Experten-Setup des Proxys eigene NGINX-Anweisungen eintragen (Header, Pufferung), falls das nötig wird?
 
 ## 1. Voraussetzungen auf dem Server prüfen
@@ -213,10 +213,10 @@ cd ~/weclapp-mcp && git pull && docker compose build --pull && docker compose up
 cd ~/weclapp-mcp && docker compose logs --tail 50
 ```
 
-**Änderungsprotokoll ansehen:**
+**Änderungsprotokoll ansehen.** Das Image hat keine Shell, `docker compose exec … sh` geht deshalb nicht. `docker compose cp` kopiert die Dateien als tar-Archiv heraus:
 
 ```bash
-cd ~/weclapp-mcp && docker compose exec weclapp-mcp sh -c 'cat /data/audit/*.jsonl' | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
+cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit - | tar -xOf - | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
 ```
 
 **Nach einem Neustart des Servers** startet Docker den Container wieder (`restart: unless-stopped`). Bei rootless Docker gilt das nur, wenn der Docker-Dienst deines Nutzers ohne Anmeldung startet. Das klärt Frage 3 aus Schritt 0.
@@ -230,13 +230,13 @@ Das Protokoll liegt im Docker-Volume `weclapp-mcp_audit_data`. Sichere es **dire
 Auf deinem Rechner (`benutzer@server` durch deinen SSH-Zugang ersetzen):
 
 ```bash
-ssh benutzer@server 'cd ~/weclapp-mcp && docker compose exec -T weclapp-mcp tar -C /data -cf - audit' > weclapp-audit-$(date +%F).tar
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit -' > weclapp-audit-$(date +%F).tar
 ```
 
-Zurückspielen (der Dienst ist dabei kurz gestoppt):
+Zurückspielen (der Dienst ist dabei kurz gestoppt). Das Image hat kein `tar`, deshalb entpackt ein kurzlebiger `busybox`-Container ohne Netz als Laufzeitnutzer `65532` direkt ins Volume. `docker compose cp` in die Gegenrichtung taugt dafür nicht: Es setzt die Besitzer der Dateien auf root, und der Server kann danach nicht mehr schreiben.
 
 ```bash
-ssh benutzer@server 'cd ~/weclapp-mcp && docker compose stop weclapp-mcp && docker compose run --rm --no-deps -T weclapp-mcp tar -C /data -xf - && docker compose start weclapp-mcp' < weclapp-audit-JJJJ-MM-TT.tar
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose stop weclapp-mcp && docker run --rm -i --network none --user 65532:65532 -v weclapp-mcp_audit_data:/data busybox:1 tar -C /data -xf - && docker compose start weclapp-mcp' < weclapp-audit-JJJJ-MM-TT.tar
 ```
 
 Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. Bewahre sie trotzdem wie andere Geschäftsdaten auf.
