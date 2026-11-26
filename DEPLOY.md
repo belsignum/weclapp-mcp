@@ -9,11 +9,16 @@ Client (Claude Code, Claude Desktop, Cursor)
 NGINX des Panels (TLS-Zertifikat, Domain)
    │  HTTP auf 127.0.0.1:<Port>
    ▼
-Container weclapp-mcp (lauscht nur auf 127.0.0.1)
-   │  HTTPS
+Container gateway (Port nur auf 127.0.0.1) ──── reicht TCP unverändert durch
+   │  internes Docker-Netz "backend"
    ▼
-<mandant>.weclapp.com
+Container weclapp-mcp (nur im internen Netz: kein Internet, kein Zugriff auf den Server)
+   │  HTTPS über CONNECT, nur zu <mandant>.weclapp.com:443
+   ▼
+Container gateway ──► <mandant>.weclapp.com
 ```
+
+Der Gateway ist dasselbe Image wie der Server mit einem anderen Programm (`src/gateway.ts`). Er ist der einzige Weg herein und hinaus: Eingehend reicht er die Verbindungen des NGINX unverändert an den Server durch. Ausgehend lässt er nur Verbindungen zum eigenen weclapp-Mandanten zu. TLS läuft dabei Ende-zu-Ende vom Server bis weclapp, der Gateway sieht den Token nie.
 
 Im Folgenden steht `mcp.example.com` für deine Domain und `8734` für den Port, den dein Panel anzeigt. Setze überall deine eigenen Werte ein.
 
@@ -31,7 +36,7 @@ Ist etwas unklar, frag beim Support nach und lass dir die Antwort schriftlich ge
 1. Darf auf meinem Server ein Docker-Container dauerhaft laufen, der über die Panel-Option „Proxy auf App-Server/Port“ erreichbar ist? Es geht um einen kleinen Node.js-Dienst für mich allein: ein MCP-Server, der für KI-Clients auf die weclapp-API zugreift, mit höchstens 1 CPU und 512 MB RAM.
 2. Wie stellt ihr Docker bereit: `docker` und `docker compose` per SSH (rootless oder mit Gruppe `docker`), oder nur über das Panel? Darf ich Images aus einem Dockerfile selbst bauen?
 3. Startet mein Container nach einem Neustart des Servers wieder von selbst (bei rootless Docker: ist „linger“ für meinen Nutzer aktiv)?
-4. Darf der Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? Für den Build kommen Docker Hub, `gcr.io` (Basis-Image) und die npm-Registry dazu.
+4. Darf ein Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? (Nur der Gateway-Container tut das, zu keinem anderen Ziel.) Für den Build kommen Docker Hub, `gcr.io` (Basis-Image) und die npm-Registry dazu.
 5. Darf ich im Experten-Setup des Proxys eigene NGINX-Anweisungen eintragen (Header, Pufferung), falls das nötig wird?
 
 ## 1. Voraussetzungen auf dem Server prüfen
@@ -161,7 +166,15 @@ docker compose ps
 docker compose logs --tail 20
 ```
 
-Erwartet: Status `healthy` und eine Zeile `[weclapp-mcp] … hört auf http://0.0.0.0:3000/mcp (Mandant: meinefirma.weclapp.com, Schreiben mit Protokoll in /data/audit)`. Im Container ist das Port 3000. Von außen erreichbar ist er nur über `127.0.0.1:8734`.
+Erwartet: beide Container (`weclapp-mcp` und `gateway`) mit Status `healthy` und diese Zeilen:
+
+```
+[weclapp-mcp] … hört auf http://0.0.0.0:3000/mcp (Mandant: meinefirma.weclapp.com, Zeitzone Europe/Berlin, Schreiben mit Protokoll in /data/audit)
+[gateway] ausgehend auf Port 3128, nur zu meinefirma.weclapp.com:443
+[gateway] eingehend auf Port 3000, weiter an weclapp-mcp:3000
+```
+
+Von außen erreichbar ist nur `127.0.0.1:8734` am Gateway. Der Server selbst hat keinen veröffentlichten Port.
 
 Warnungen wie `Your kernel does not support … limit` bei rootless Docker heißen: CPU- oder Speicherlimit greifen nicht. Der Server läuft trotzdem. Sag dem Hoster Bescheid, wenn ihm die Limits wichtig sind.
 
@@ -194,6 +207,14 @@ printf 'weclapp-Token: ' && read -rs WECLAPP_TOKEN && echo && curl -s -H "Author
 ```
 
 Erwartet: eine Zeile `data: {"result":{…"serverInfo":{"name":"weclapp-mcp",…}}}`.
+
+**Abschottung prüfen** (per SSH auf dem Server). Der Befehl startet im Server-Container ein kurzes Node-Skript. Es ruft weclapp über den Gateway ab und versucht dann, andere Ziele zu erreichen:
+
+```bash
+cd ~/weclapp-mcp && docker compose exec -e T="$(grep '^WECLAPP_TENANT=' .env | cut -d= -f2).weclapp.com" weclapp-mcp /nodejs/bin/node -e "const n=require('net');const t=(h,p)=>new Promise(r=>{const s=n.connect({host:h,port:p,timeout:3000});s.on('connect',()=>{s.destroy();r('ERREICHBAR')});s.on('timeout',()=>{s.destroy();r('gesperrt (timeout)')});s.on('error',e=>r('gesperrt ('+e.code+')'))});const f=u=>fetch(u,{signal:AbortSignal.timeout(8000)}).then(x=>'HTTP '+x.status,()=>'gesperrt');(async()=>{console.log('weclapp:',await f('https://'+process.env.T+'/webapp/api/v2/user/currentUser'));console.log('example.com:',await f('https://example.com/'));console.log('1.1.1.1:443:',await t('1.1.1.1',443));console.log('docker0 172.17.0.1:22:',await t('172.17.0.1',22))})()"
+```
+
+Erwartet: `weclapp: HTTP 401` (weclapp antwortet, ohne Token eben mit 401), alle anderen Zeilen `gesperrt (…)`. Steht irgendwo `ERREICHBAR` oder `HTTP 200` bei example.com, ist die Abschottung auf diesem Server nicht wirksam: Container stoppen und den Fall melden.
 
 ## 7. Clients verbinden
 
@@ -245,12 +266,12 @@ Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. B
 
 | Symptom | Ursache und Abhilfe |
 |---|---|
-| `502 Bad Gateway` | Der Container läuft nicht oder hört auf einem anderen Port. Auf dem Server: `docker compose ps`, dann `curl -s http://127.0.0.1:8734/health`. `MCP_PORT` muss dem Port im Panel entsprechen. |
+| `502 Bad Gateway` | Ein Container läuft nicht oder der Port stimmt nicht. Auf dem Server: `docker compose ps` (beide Container `healthy`?), dann `curl -s http://127.0.0.1:8734/health`. `MCP_PORT` muss dem Port im Panel entsprechen. |
 | `403` mit `Invalid Host` | Das NGINX schickt einen Host, der nicht erlaubt ist. Schritt 4 (Tabelle `host`). |
 | `403` mit `Invalid Origin` | Ein Browser oder Client schickt einen fremden `Origin`. Das ist der Schutz gegen DNS-Rebinding. Normale MCP-Clients schicken keinen `Origin`. |
 | `401` | Kein oder ungültiger Token. Den Token in weclapp prüfen bzw. neu anlegen. |
 | `429` | Zu viele Fehlversuche (Schritt 4, „Was `MCP_TRUST_PROXY=false` bedeutet“). Bis zu 5 Minuten warten. |
-| `503` | weclapp war nicht erreichbar. Sind ausgehende HTTPS-Verbindungen vom Server erlaubt (Schritt 0, Frage 4)? |
+| `503` | weclapp war nicht erreichbar. `docker compose logs gateway`: Steht dort `abgelehnt: CONNECT …`, passt `WECLAPP_TENANT` nicht zum Ziel. Steht dort `nicht erreichbar`, sind ausgehende HTTPS-Verbindungen vom Server gesperrt (Schritt 0, Frage 4). |
 | `413` | Request größer als 1 MB. NGINX und Server haben dieselbe Grenze. |
 | Antwort bricht nach etwa 60 s ab | Server und NGINX begrenzen einen Request auf rund 60 s. weclapp-Abfragen sind normalerweise viel schneller. |
 | `port is already allocated` | Ein anderer Prozess nutzt den Port, z. B. ein vergessener Header-Test: `docker stop weclapp-header-test`. |

@@ -2,6 +2,10 @@
 # Voraussetzung: DNS-Eintrag MCP_DOMAIN zeigt auf den VPS, Ports 80 und 443 sind offen.
 #   cp .env.example .env   # Werte eintragen
 #   docker compose up -d --build
+#
+# Netze: Der Server hängt nur im internen Netz "backend" (kein Internet, keine Adresse des Hosts).
+# Caddy und der Gateway hängen zusätzlich im normalen Netz: Caddy für die Ports 80/443 und Let's Encrypt,
+# der Gateway, um ausgehend genau den weclapp-Mandanten zu erreichen.
 
 services:
   weclapp-mcp:
@@ -19,6 +23,10 @@ services:
       # Nur Caddy erreicht den Container, daher darf X-Forwarded-For für das Rate-Limit gelten.
       # Den Port 3000 nie zusätzlich nach außen veröffentlichen: sonst könnte jeder diese Angabe fälschen.
       MCP_TRUST_PROXY: "true"
+      # Ausgehend nur über den Gateway. fetch nutzt den Proxy aus der Umgebung unter Node 24 nur mit NODE_USE_ENV_PROXY.
+      NODE_USE_ENV_PROXY: "1"
+      HTTPS_PROXY: http://gateway:3128
+      NO_PROXY: localhost,127.0.0.1
     # kein Port nach außen: nur Caddy spricht mit dem Container
     expose:
       - "3000"
@@ -31,7 +39,29 @@ services:
       - no-new-privileges:true
     pids_limit: 200
     mem_limit: 512m
-    networks: [internal]
+    networks: [backend]
+
+  gateway:
+    # Dasselbe Image, anderes Programm: src/gateway.ts. Liest nur den Code, schreibt nichts.
+    build: .
+    command: ["--permission", "--allow-fs-read=/app", "dist/gateway.js"]
+    restart: unless-stopped
+    environment:
+      # Das einzige Ziel nach draußen. TLS bleibt Ende-zu-Ende, der Gateway sieht den Token nie.
+      EGRESS_ALLOW: ${WECLAPP_TENANT:?WECLAPP_TENANT in .env setzen}.weclapp.com:443
+    healthcheck:
+      test: ["CMD", "/nodejs/bin/node", "-e", "fetch('http://127.0.0.1:3128/health',{signal:AbortSignal.timeout(4000)}).then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 50
+    mem_limit: 128m
+    networks: [backend, default]
 
   caddy:
     image: caddy:2-alpine
@@ -55,10 +85,15 @@ services:
       - no-new-privileges:true
     pids_limit: 200
     mem_limit: 256m
-    networks: [internal]
+    networks: [backend, default]
 
 networks:
-  internal:
+  # Intern: kein Weg ins Internet. inhibit_ipv4: Die Bridge bekommt keine Adresse des Hosts,
+  # Dienste auf dem Server (Datenbanken, andere Container-Ports) sind von hier aus nicht erreichbar.
+  backend:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.inhibit_ipv4: "true"
 
 volumes:
   audit_data:

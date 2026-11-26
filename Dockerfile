@@ -27,7 +27,8 @@ COPY --from=build /app/dist ./dist
 # Aus /out/ statt /out/data, damit auch /data selbst die Rechte 0700 behält
 COPY --from=build --chown=65532:65532 /out/ /
 USER 65532:65532
-VOLUME /data
+# Kein VOLUME: Compose hängt das Volume für /data ausdrücklich ein. Ein VOLUME hier gäbe auch dem Gateway
+# (gleiches Image, braucht kein /data) ein beschreibbares anonymes Volume.
 EXPOSE 3000
 # Ohne wget: Node fragt /health selbst ab
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

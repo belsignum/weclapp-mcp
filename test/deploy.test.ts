@@ -13,10 +13,19 @@ async function service(name: string, file = 'docker-compose.yml'): Promise<strin
   return match[1];
 }
 
-const HARDENING = ['read_only: true', 'cap_drop: [ALL]', 'no-new-privileges:true', 'pids_limit:', 'mem_limit:'];
+/** Oberste Ebene "networks:" einer Compose-Datei. */
+async function networks(file: string): Promise<string> {
+  const compose = await readFile(new URL(`../${file}`, import.meta.url), 'utf8');
+  const match = compose.match(/\nnetworks:\n([\s\S]*?)(?=\n\S|$)/);
+  assert.ok(match, `networks fehlt in ${file}`);
+  return match[1];
+}
 
-test('Compose: beide Container laufen eingeschränkt, auch der aus dem Internet erreichbare Caddy', async () => {
-  for (const name of ['weclapp-mcp', 'caddy']) {
+const HARDENING = ['read_only: true', 'cap_drop: [ALL]', 'no-new-privileges:true', 'pids_limit:', 'mem_limit:'];
+const FILES = ['docker-compose.yml', 'docker-compose.nginx.yml'];
+
+test('Compose: alle Container laufen eingeschränkt, auch der aus dem Internet erreichbare Caddy und der Gateway', async () => {
+  for (const name of ['weclapp-mcp', 'gateway', 'caddy']) {
     const block = await service(name);
     for (const setting of HARDENING) {
       assert.ok(block.includes(setting), `${name}: "${setting}" fehlt`);
@@ -26,26 +35,54 @@ test('Compose: beide Container laufen eingeschränkt, auch der aus dem Internet 
 
 test('Compose: nur Caddy veröffentlicht Ports, der Server ist allein über Caddy erreichbar', async () => {
   assert.doesNotMatch(await service('weclapp-mcp'), /^\s*ports:/m);
+  assert.doesNotMatch(await service('gateway'), /^\s*ports:/m);
   assert.match(await service('caddy'), /^\s*ports:/m);
 });
 
 test('Compose hinter vorhandenem NGINX: gleiche Härtung, Audit-Volume, kein Caddy', async () => {
   const file = 'docker-compose.nginx.yml';
-  const block = await service('weclapp-mcp', file);
-  for (const setting of [...HARDENING, 'audit_data:/data', 'cpus:', 'max-size:']) {
-    assert.ok(block.includes(setting), `${file}: "${setting}" fehlt`);
+  for (const name of ['weclapp-mcp', 'gateway']) {
+    const block = await service(name, file);
+    for (const setting of [...HARDENING, 'cpus:', 'max-size:']) {
+      assert.ok(block.includes(setting), `${file}, ${name}: "${setting}" fehlt`);
+    }
   }
+  assert.ok((await service('weclapp-mcp', file)).includes('audit_data:/data'));
   await assert.rejects(service('caddy', file), /fehlt/);
 });
 
-test('Compose hinter vorhandenem NGINX: Port nur auf 127.0.0.1, X-Forwarded-For standardmäßig nicht vertraut', async () => {
-  const block = await service('weclapp-mcp', 'docker-compose.nginx.yml');
-  const ports = [...block.matchAll(/^\s*- "([^"]+)"\s*$/gm)].map((m) => m[1]).filter((p) => p.endsWith(':3000'));
+test('Compose hinter vorhandenem NGINX: Port nur auf 127.0.0.1 und nur am Gateway, X-Forwarded-For standardmäßig nicht vertraut', async () => {
+  const file = 'docker-compose.nginx.yml';
+  const server = await service('weclapp-mcp', file);
+  const gateway = await service('gateway', file);
+  assert.doesNotMatch(server, /^\s*(ports|expose):/m);
+  const ports = [...gateway.matchAll(/^\s*- "([^"]+)"\s*$/gm)].map((m) => m[1]).filter((p) => p.endsWith(':3000'));
   assert.equal(ports.length, 1, 'genau eine Portfreigabe erwartet');
   // Die Adresse steht fest im Text, nicht in einer Variablen, die .env überschreiben könnte
   assert.match(ports[0], /^127\.0\.0\.1:\$\{MCP_PORT:\?[^}]*\}:3000$/);
-  assert.match(block, /MCP_TRUST_PROXY: \$\{MCP_TRUST_PROXY:-false\}/);
-  assert.doesNotMatch(block, /^\s*expose:/m);
+  assert.match(gateway, /INGRESS_TARGET: weclapp-mcp:3000/);
+  assert.match(server, /MCP_TRUST_PROXY: \$\{MCP_TRUST_PROXY:-false\}/);
+});
+
+test('Compose: Server nur im internen Netz ohne Adresse des Hosts, ausgehend nur über den Gateway zum Mandanten', async () => {
+  for (const file of FILES) {
+    const backend = (await networks(file)).match(/\n?  backend:\n((?:    .*\n?)*)/)?.[1] ?? '';
+    assert.match(backend, /^    internal: true$/m, `${file}: backend nicht intern`);
+    assert.match(backend, /com\.docker\.network\.bridge\.inhibit_ipv4: "true"/, `${file}: Bridge hätte eine Adresse des Hosts`);
+
+    const server = await service('weclapp-mcp', file);
+    assert.match(server, /^    networks: \[backend\]$/m, `${file}: Server darf nur im internen Netz hängen`);
+    assert.match(server, /NODE_USE_ENV_PROXY: "1"/);
+    assert.match(server, /HTTPS_PROXY: http:\/\/gateway:3128/);
+    // Der Healthcheck fragt 127.0.0.1 und darf nicht über den Gateway laufen
+    assert.match(server, /NO_PROXY: [^\n]*127\.0\.0\.1/);
+
+    const gateway = await service('gateway', file);
+    assert.match(gateway, /^    networks: \[backend, default\]$/m);
+    assert.match(gateway, /EGRESS_ALLOW: \$\{WECLAPP_TENANT:\?[^}]*\}\.weclapp\.com:443$/m);
+    assert.match(gateway, /command: \["--permission", "--allow-fs-read=\/app", "dist\/gateway\.js"\]/);
+    assert.doesNotMatch(gateway, /allow-fs-write|volumes:/, `${file}: der Gateway braucht keinen beschreibbaren Ort`);
+  }
 });
 
 test('Dockerfile: Laufzeit-Image ohne Shell, Basis-Images per Digest, Laufzeitnutzer nonroot', async () => {

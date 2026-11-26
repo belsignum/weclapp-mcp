@@ -95,7 +95,7 @@ Den Token behandelst du wie ein Passwort: Wer ihn hat, hat in weclapp deine Rech
 
 ## Betrieb auf einem VPS (Docker + Caddy)
 
-Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Container selbst ist von außen nicht erreichbar.
+Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Container selbst ist von außen nicht erreichbar. Er hängt nur in einem internen Docker-Netz ohne Internet und ohne Zugriff auf den Server; nach draußen kommt er allein über einen kleinen Gateway-Container, der nur Verbindungen zum eigenen weclapp-Mandanten zulässt (siehe [SECURITY.md](SECURITY.md#abschottung-des-containers)).
 
 Läuft auf deinem Server schon ein NGINX, das TLS übernimmt und an einen lokalen Port weiterleitet (etwa die Option „Proxy auf App-Server/Port“ einer Hosting-Verwaltungsoberfläche), nimm stattdessen `docker-compose.nginx.yml`. Die Schritt-für-Schritt-Anleitung steht in [DEPLOY.md](DEPLOY.md).
 
