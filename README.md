@@ -247,6 +247,12 @@ WECLAPP_TENANT=meinefirma WECLAPP_AUDIT_DIR=./audit npm run dev   # HTTP-Server 
 
 Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit Node; `npm run build` erzeugt `dist/` für Docker und `npx`.
 
+```bash
+scripts/container-check.sh   # Probelauf des Docker-Aufbaus: baut, startet, prüft Funktion und Abschottung, räumt ab
+```
+
+Jeder PR durchläuft den PR-Check (`.github/workflows/check.yml`): Typecheck, Tests, `npm audit` der Laufzeit-Abhängigkeiten, Gültigkeit beider Compose-Dateien und `scripts/container-check.sh`.
+
 ### Rauchtest am echten Mandanten
 
 ```bash
