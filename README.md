@@ -251,7 +251,7 @@ Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit No
 scripts/container-check.sh   # Probelauf des Docker-Aufbaus: baut, startet, prüft Funktion und Abschottung, räumt ab
 ```
 
-Jeder PR durchläuft den PR-Check (`.github/workflows/check.yml`): Typecheck, Tests, `npm audit` der Laufzeit-Abhängigkeiten, Gültigkeit beider Compose-Dateien und `scripts/container-check.sh`.
+Jeder PR durchläuft den PR-Check (`.github/workflows/check.yml`): Typecheck, Tests, `npm audit` der Laufzeit-Abhängigkeiten, Gültigkeit beider Compose-Dateien und `scripts/container-check.sh`. Die Checks „Tests“ und „Docker“ sind Pflicht für `main`. Secret Scanning und Push Protection sind eingeschaltet: GitHub weist Pushes mit erkannten Zugangsdaten ab.
 
 ### Rauchtest am echten Mandanten
 

@@ -123,7 +123,7 @@ Frage: Was erreicht jemand, der über eine Lücke im Code Befehle im Server-Cont
 | 25 | **Der Node-Prozess durfte alles lesen und Prozesse starten.** | Vorher: `/etc/passwd` und `/proc/1/environ` lesbar, `child_process` und `Worker` erlaubt. | niedrig | entschärft: Permission Model. Lesen außerhalb von `/app` und `/data`, Schreiben außerhalb von `/data`, Kindprozesse und Worker enden mit `ERR_ACCESS_DENIED`; der laufende Server hat die Optionen (`/proc/1/cmdline`). Keine Sicherheitsgrenze, siehe oben. |
 | 26 | **`/dev/shm` war trotz `read_only` beschreibbar.** | 64-MB-`tmpfs` mit `noexec` in Server und Gateway, Schreiben möglich. | niedrig | behoben: `ipc: none`. Kein `/dev/shm` mehr, Server und Gateway laufen und sind `healthy`. |
 | 27 | **Das Log ließ sich fluten, in der Caddy-Variante ohne Grenze.** Eine volle Platte legt alle Dienste des Servers lahm. In `docker-compose.yml` hatte kein Container ein Log-Limit; das betraf auch den Server selbst schon vor dem Gateway. | Aus dem Server-Container 34 833 abgelehnte `CONNECT` in 5 s: Gateway-Log plus 0,95 MB, hochgerechnet rund 15 GB pro Tag. | niedrig bis mittel (setzt Codeausführung voraus) | behoben: Log-Limit 3 × 1 MB für alle Container beider Varianten; der Gateway schreibt höchstens 20 Zeilen pro Minute und fasst den Rest zusammen. Nachher: 46 090 Versuche in 5 s, 17 Zeilen. |
-| 28 | **Updates und Prüfung hingen an Handarbeit.** Basis-Images per Tag, keine Meldung neuer Stände, kein PR-Check. | `FROM node:24-alpine`, `image: caddy:2-alpine`, kein Verzeichnis `.github/`. | niedrig | behoben: Basis-Images per Digest, Dependabot, PR-Check mit Tests und Probelauf. Offen: Pflicht-Check, Secret Scanning und Push Protection sind Einstellungen des Repos und noch nicht gesetzt. |
+| 28 | **Updates und Prüfung hingen an Handarbeit.** Basis-Images per Tag, keine Meldung neuer Stände, kein PR-Check. | `FROM node:24-alpine`, `image: caddy:2-alpine`, kein Verzeichnis `.github/`. | niedrig | behoben: Basis-Images per Digest, Dependabot, PR-Check mit Tests und Probelauf. Seit 26.11.2026 sind „Tests“ und „Docker“ Pflicht für `main` (Ruleset „main: Pflicht-Checks“, ohne Ausnahmen), Secret Scanning und Push Protection sind eingeschaltet. |
 
 ### Geprüft und ohne Befund
 
@@ -134,14 +134,14 @@ Frage: Was erreicht jemand, der über eine Lücke im Code Befehle im Server-Cont
 - **Funktion:** Healthchecks beider Container laufen ohne Proxy (`NO_PROXY`). Tool-Liste, Schreiben mit Protokoll (`0600`, Besitzer 65532), Lesen des Protokolls, `413` bei 1,1 MB über Caddy. Caddy erreicht Let's Encrypt weiterhin.
 - **Backup und Restore** mit den neuen Befehlen aus DEPLOY.md (`docker compose cp` heraus, `busybox` als 65532 zurück): Rechte bleiben erhalten. Gegenprobe: `docker compose cp` in die Gegenrichtung setzt den Besitzer falsch, danach kann der Server nicht mehr schreiben. Deshalb steht es nicht in der Anleitung.
 - **Lieferkette:** `npm audit` 0 Schwachstellen. Der PR-Check läuft nur mit `contents: read`, nie mit `pull_request_target`, die Actions sind per Commit-SHA festgelegt, `persist-credentials: false`. `dependabot.yml` gegen das Schema von SchemaStore geprüft, der Workflow mit `actionlint`.
+- **amd64 und ein zweites Docker:** Der PR-Check auf GitHub (ubuntu-24.04, amd64) baute das Image und lief mit dem Probelauf ohne Befund, alle 22 Prüfungen bestanden, auch die Sperre der Host-Adresse im internen Netz.
 
 ### Nicht geprüft
 
-- **Docker auf dem Zielserver.** Version, rootless oder User-Namespaces, IPv6-Voreinstellung und Firewall-Backend sind unbekannt (DEPLOY.md, Schritt 0, Frage 2). Das Verhalten von `internal` und `inhibit_ipv4` ist nur an Docker 29.3 geprüft. DEPLOY.md, Schritt 6, enthält einen Prüfbefehl für nach dem Ausrollen.
-- **amd64:** lokal lief nur arm64. Der PR-Check auf GitHub läuft auf amd64.
+- **Docker auf dem Zielserver.** Version, rootless oder User-Namespaces, IPv6-Voreinstellung und Firewall-Backend sind unbekannt (DEPLOY.md, Schritt 0, Frage 2). Das Verhalten von `internal` und `inhibit_ipv4` ist nur an Docker 29.3 (lokal) und am Docker des GitHub-Runners geprüft. DEPLOY.md, Schritt 6, enthält einen Prüfbefehl für nach dem Ausrollen.
 - **Umweg über weclapp:** Der Gateway sieht nur das Ziel des Tunnels, nicht den verschlüsselten Inhalt. Ob die Server von weclapp eine Anfrage anhand des `Host`-Headers an einen *anderen* Mandanten weiterleiten, wenn der Tunnel zum eigenen Mandanten führt, ist nicht geprüft; das wäre ein Test an der Infrastruktur von weclapp. Wenn ja, könnte Code im Container Daten an einen fremden Mandanten schicken.
 - **Umgehen des Permission Models** über Fehler in Node und Ausbrüche aus dem Container über den Kernel: liegen außerhalb dessen, was sich hier prüfen lässt.
-- **Dependabot und PR-Check auf GitHub:** Dependabot arbeitet erst nach dem Merge in `main`; ob er die Digests wie erwartet vorschlägt, zeigt der erste Lauf.
+- **Dependabot:** arbeitet erst nach dem Merge in `main`; ob er die Digests wie erwartet vorschlägt, zeigt der erste Lauf.
 
 ## Verbleibende Risiken
 

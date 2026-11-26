@@ -235,7 +235,7 @@ Die Basis-Images sind im Dockerfile und in `docker-compose.yml` per Digest festg
 **Wie Updates entstehen und auf den Server kommen:**
 
 - **Dependabot** (`.github/dependabot.yml`) öffnet montags PRs für npm-Pakete, neue Digests der Basis-Images (Build-Stufe `node:24-alpine`, Laufzeit distroless, Caddy) und GitHub Actions. npm-Pakete und Actions schlägt er frühestens sieben Tage nach ihrer Veröffentlichung vor: Kompromittierte Pakete fallen meist in den ersten Tagen auf. Neue Digests der Basis-Images kommen ohne Wartezeit, sie bringen die Sicherheitsupdates von Debian, Alpine und Node.
-- **Prüfen und mergen:** Jeder PR durchläuft den PR-Check (Tests, Typecheck, Docker-Build, Probelauf des Containers). Gemergt wird von Hand. Eine neue Node-Hauptversion schlägt Dependabot nicht vor; die wechselst du bewusst (das distroless-Image trägt sie im Namen, `nodejs24`).
+- **Prüfen und mergen:** Jeder PR durchläuft den PR-Check (Tests, Typecheck, Docker-Build, Probelauf des Containers). Die Checks „Tests“ und „Docker“ sind Pflicht: Ohne beide grün lässt GitHub nicht in `main` mergen. Gemergt wird von Hand. Eine neue Node-Hauptversion schlägt Dependabot nicht vor; die wechselst du bewusst (das distroless-Image trägt sie im Namen, `nodejs24`).
 - **Ausrollen:** nach jedem gemergten Update-PR der Befehl oben. GitHub benachrichtigt dich über neue Dependabot-PRs, das ist zugleich die Erinnerung. Richtwert: Updates der Basis-Images innerhalb einer Woche einspielen.
 - **Nicht eingerichtet, mögliche nächste Stufe**, je nachdem, was der Hoster erlaubt (Schritt 0):
   - **Automatisch auf dem Server:** ein Cron-Job oder systemd-Timer, der wöchentlich `git pull --ff-only && docker compose up -d --build` ausführt. Wenig Aufwand, aber ein Dauerauftrag auf dem Server, und jeder Stand von `main` läuft ohne weiteren Blick an.
@@ -352,7 +352,7 @@ cd ~/weclapp-mcp && docker compose down && git checkout "$(cat ~/weclapp-mcp-vor
 - Container: `docker compose exec … sh` scheitert, Nutzer 65532, schreibgeschütztes Dateisystem außer `/data`, Permission Model, kein `/dev/shm`, Log auf 3 × 1 MB begrenzt. Das Protokoll entsteht mit `0600`.
 - Abschottung: Der Server-Container erreicht weder Dienste auf dem Host noch das Internet noch fremde Namen im DNS. Der Weg zum echten Mandanten über den Gateway funktioniert: ein ungültiger Token ergibt `401` von weclapp. Der Prüfbefehl aus Schritt 6 liefert das erwartete Ergebnis.
 - Umstellung aus Abschnitt 11, Schritt für Schritt mit einem Eintrag aus dem alten Image: Ohne `chown` startet der neue Server nicht, danach mit allen Einträgen; Schreiben geht. Der Rückweg mit `--build` startet wieder das alte Image als Nutzer 1000 mit allen Einträgen. Backup und Restore aus Schritt 9 mit den neuen Befehlen: Die Rechte (`0600`, Besitzer 65532) bleiben erhalten.
-- `scripts/container-check.sh` fasst diese Prüfungen zusammen und läuft bei jedem PR.
+- `scripts/container-check.sh` fasst diese Prüfungen zusammen und läuft bei jedem PR. Auf GitHub (ubuntu-24.04, amd64) lief er ohne Befund.
 
 **Stand 13.11.2026, vor dem Umbau** (ein Container, `node:24-alpine`). Zwei NGINX vor dem Server, einer wie ein Panel-Proxy, einer mit dem Experten-Setup oben:
 
