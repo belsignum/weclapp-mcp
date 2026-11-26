@@ -13,6 +13,11 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      # Die Typen müssen zur Node-Hauptversion im Image passen (nodejs24). Mit neueren Typen ließe der Typecheck
+      # Funktionen durch, die es im Container nicht gibt. Hauptversion nur zusammen mit dem Image wechseln.
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
 
   # Basis-Images im Dockerfile (Build-Stufe node:24-alpine, Laufzeit distroless). Beide sind per Digest festgelegt;
@@ -25,7 +30,7 @@ updates:
     ignore:
       # Node-Hauptversion nur bewusst wechseln (das distroless-Image trägt sie im Namen: nodejs24)
       - dependency-name: node
-        update-types: [version-update:semver-major]
+        update-types: ["version-update:semver-major"]
 
   # Caddy in docker-compose.yml
   - package-ecosystem: docker-compose
@@ -35,7 +40,7 @@ updates:
       day: monday
     ignore:
       - dependency-name: caddy
-        update-types: [version-update:semver-major]
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
