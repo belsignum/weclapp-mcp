@@ -103,3 +103,9 @@ test('Dockerfile: Laufzeit-Image ohne Shell, Basis-Images per Digest, Laufzeitnu
   assert.equal(runtime.match(/^USER .*$/gm)?.at(-1), 'USER 65532:65532');
   assert.match(runtime, /^COPY --from=build --chown=65532:65532 \/out\/ \/$/m, '/data mit Besitzer nonroot aus der Build-Stufe');
 });
+
+test('Compose: fremde Images per Digest, damit Dependabot neue Stände als PR vorschlägt', async () => {
+  const images = [...(await readFile(new URL('../docker-compose.yml', import.meta.url), 'utf8')).matchAll(/^\s+image: (\S+)$/gm)].map((m) => m[1]);
+  assert.ok(images.length > 0);
+  for (const image of images) assert.match(image, /:[\w.-]+@sha256:[0-9a-f]{64}$/, `${image}: Tag und Digest erwartet`);
+});

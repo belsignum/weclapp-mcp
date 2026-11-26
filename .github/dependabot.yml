@@ -1,0 +1,46 @@
+# Wöchentliche Update-PRs. Jeder PR durchläuft den PR-Check (Tests, Typecheck, Docker-Build, Container-Probelauf)
+# und wird von Hand geprüft und gemergt. Ausrollen auf dem Server: DEPLOY.md, Schritt 8.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Neue Versionen erst nach einer Woche vorschlagen: Kompromittierte npm-Pakete fallen meist in den ersten Tagen auf
+    cooldown:
+      default-days: 7
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    open-pull-requests-limit: 5
+
+  # Basis-Images im Dockerfile (Build-Stufe node:24-alpine, Laufzeit distroless). Beide sind per Digest festgelegt;
+  # Dependabot schlägt neue Digests desselben Tags vor, also neu gebaute Images mit Sicherheitsupdates. Ohne Wartezeit.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    ignore:
+      # Node-Hauptversion nur bewusst wechseln (das distroless-Image trägt sie im Namen: nodejs24)
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+
+  # Caddy in docker-compose.yml
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    ignore:
+      - dependency-name: caddy
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7

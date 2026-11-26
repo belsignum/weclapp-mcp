@@ -225,8 +225,19 @@ Auf jedem Gerät brauchst du die URL `https://mcp.example.com/mcp` und deinen we
 **Updates einspielen:**
 
 ```bash
-cd ~/weclapp-mcp && git pull && docker compose build --pull && docker compose up -d
+cd ~/weclapp-mcp && git pull && docker compose up -d --build
 ```
+
+Die Basis-Images sind im Dockerfile und in `docker-compose.yml` per Digest festgelegt. `--pull` ist deshalb nicht nötig: Gebaut wird genau das Image, das im PR geprüft wurde.
+
+**Wie Updates entstehen und auf den Server kommen:**
+
+- **Dependabot** (`.github/dependabot.yml`) öffnet montags PRs für npm-Pakete, neue Digests der Basis-Images (Build-Stufe `node:24-alpine`, Laufzeit distroless, Caddy) und GitHub Actions. npm-Pakete und Actions schlägt er frühestens sieben Tage nach ihrer Veröffentlichung vor: Kompromittierte Pakete fallen meist in den ersten Tagen auf. Neue Digests der Basis-Images kommen ohne Wartezeit, sie bringen die Sicherheitsupdates von Debian, Alpine und Node.
+- **Prüfen und mergen:** Jeder PR durchläuft den PR-Check (Tests, Typecheck, Docker-Build, Probelauf des Containers). Gemergt wird von Hand. Eine neue Node-Hauptversion schlägt Dependabot nicht vor; die wechselst du bewusst (das distroless-Image trägt sie im Namen, `nodejs24`).
+- **Ausrollen:** nach jedem gemergten Update-PR der Befehl oben. GitHub benachrichtigt dich über neue Dependabot-PRs, das ist zugleich die Erinnerung. Richtwert: Updates der Basis-Images innerhalb einer Woche einspielen.
+- **Nicht eingerichtet, mögliche nächste Stufe**, je nachdem, was der Hoster erlaubt (Schritt 0):
+  - **Automatisch auf dem Server:** ein Cron-Job oder systemd-Timer, der wöchentlich `git pull --ff-only && docker compose up -d --build` ausführt. Wenig Aufwand, aber ein Dauerauftrag auf dem Server, und jeder Stand von `main` läuft ohne weiteren Blick an.
+  - **Fertiges Image aus GitHub:** GitHub Actions baut das Image und legt es in die GitHub Container Registry (`ghcr.io`), der Server zieht es nur noch (`docker compose pull && docker compose up -d`). Spart den Build auf dem Server; dafür `image:` statt `build:` in den Compose-Dateien und ein Workflow mit Schreibrecht auf Pakete.
 
 **Logs ansehen** (Start- und Fehlermeldungen, nie der Token; Docker behält höchstens 3 × 1 MB):
 

@@ -121,7 +121,7 @@ Ein Funktionstest, kein Angriff: `scripts/smoke-article.ts` startet den Server l
 - **Ein volles Protokoll sperrt das Schreiben.** Das ist Absicht (ohne Protokoll keine Änderung), braucht dann aber einen Eingriff: `WECLAPP_AUDIT_MAX_MB` erhöhen oder alte Monatsdateien sichern und entfernen. Bei normaler Nutzung sind 100 MB in der Aufbewahrungsfrist nicht zu erreichen.
 - **Das Protokoll ist manipulierbar, wenn der VPS kompromittiert ist.** Es ist ein Arbeitsprotokoll mit Undo, kein revisionssicheres Archiv.
 - **Statusänderungen an Tickets** können je nach weclapp-Einstellung E-Mails an Kunden auslösen. Das steuert weclapp, nicht dieser Server.
-- **Basis-Images** sind per Tag (`node:24-alpine`, `caddy:2-alpine`) und nicht per Digest festgelegt.
+- **Updates kommen nicht von selbst auf den Server.** Basis-Images sind per Digest festgelegt, Dependabot schlägt neue Digests und Pakete wöchentlich als PR vor. Eingespielt werden sie erst, wenn jemand den PR mergt und auf dem Server neu baut (DEPLOY.md, Schritt 8). Bis dahin läuft der alte Stand mit allen Lücken, die das neue Image schließt.
 
 ## Empfehlungen für den Betrieb
 
@@ -130,7 +130,7 @@ Ein Funktionstest, kein Angriff: `scripts/smoke-article.ts` startet den Server l
 - Vor größeren geplanten Sammeländerungen `WECLAPP_MAX_WRITES_PER_HOUR` vorübergehend erhöhen, danach zurücksetzen.
 - Auf dem VPS nur die Ports 80, 443 und SSH öffnen; SSH nur mit Schlüssel.
 - Das Volume `audit_data` in die Backups aufnehmen.
-- Regelmäßig aktualisieren: `git pull && docker compose build --pull && docker compose up -d`.
+- Regelmäßig aktualisieren: Dependabot-PRs prüfen und mergen, dann auf dem Server `git pull && docker compose up -d --build`.
 
 ## Schwachstelle melden
 
