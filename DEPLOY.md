@@ -9,13 +9,20 @@ Client (Claude Code, Claude Desktop, Cursor)
 NGINX des Panels (TLS-Zertifikat, Domain)
    │  HTTP auf 127.0.0.1:<Port>
    ▼
-Container weclapp-mcp (lauscht nur auf 127.0.0.1)
-   │  HTTPS
+Container gateway (Port nur auf 127.0.0.1) ──── reicht TCP unverändert durch
+   │  internes Docker-Netz "backend"
    ▼
-<mandant>.weclapp.com
+Container weclapp-mcp (nur im internen Netz: kein Internet, kein Zugriff auf den Server)
+   │  HTTPS über CONNECT, nur zu <mandant>.weclapp.com:443
+   ▼
+Container gateway ──► <mandant>.weclapp.com
 ```
 
+Der Gateway ist dasselbe Image wie der Server mit einem anderen Programm (`src/gateway.ts`). Er ist der einzige Weg herein und hinaus: Eingehend reicht er die Verbindungen des NGINX unverändert an den Server durch. Ausgehend lässt er nur Verbindungen zum eigenen weclapp-Mandanten zu. TLS läuft dabei Ende-zu-Ende vom Server bis weclapp, der Gateway sieht den Token nie.
+
 Im Folgenden steht `mcp.example.com` für deine Domain und `8734` für den Port, den dein Panel anzeigt. Setze überall deine eigenen Werte ein.
+
+Läuft der Server bei dir schon in der älteren Form (ein Container, Image `node:24-alpine`, ohne Gateway), stellst du ihn mit Abschnitt 11 um.
 
 ## 0. Vorher klären: AGB und Freigabe des Hosters
 
@@ -31,7 +38,7 @@ Ist etwas unklar, frag beim Support nach und lass dir die Antwort schriftlich ge
 1. Darf auf meinem Server ein Docker-Container dauerhaft laufen, der über die Panel-Option „Proxy auf App-Server/Port“ erreichbar ist? Es geht um einen kleinen Node.js-Dienst für mich allein: ein MCP-Server, der für KI-Clients auf die weclapp-API zugreift, mit höchstens 1 CPU und 512 MB RAM.
 2. Wie stellt ihr Docker bereit: `docker` und `docker compose` per SSH (rootless oder mit Gruppe `docker`), oder nur über das Panel? Darf ich Images aus einem Dockerfile selbst bauen?
 3. Startet mein Container nach einem Neustart des Servers wieder von selbst (bei rootless Docker: ist „linger“ für meinen Nutzer aktiv)?
-4. Darf der Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? Für den Build kommen Docker Hub und die npm-Registry dazu.
+4. Darf ein Container ausgehende HTTPS-Verbindungen zu `<mandant>.weclapp.com` aufbauen? (Nur der Gateway-Container tut das, zu keinem anderen Ziel.) Für den Build kommen Docker Hub, `gcr.io` (Basis-Image) und die npm-Registry dazu.
 5. Darf ich im Experten-Setup des Proxys eigene NGINX-Anweisungen eintragen (Header, Pufferung), falls das nötig wird?
 
 ## 1. Voraussetzungen auf dem Server prüfen
@@ -161,7 +168,15 @@ docker compose ps
 docker compose logs --tail 20
 ```
 
-Erwartet: Status `healthy` und eine Zeile `[weclapp-mcp] … hört auf http://0.0.0.0:3000/mcp (Mandant: meinefirma.weclapp.com, Schreiben mit Protokoll in /data/audit)`. Im Container ist das Port 3000. Von außen erreichbar ist er nur über `127.0.0.1:8734`.
+Erwartet: beide Container (`weclapp-mcp` und `gateway`) mit Status `healthy` und diese Zeilen:
+
+```
+[weclapp-mcp] … hört auf http://0.0.0.0:3000/mcp (Mandant: meinefirma.weclapp.com, Zeitzone Europe/Berlin, Schreiben mit Protokoll in /data/audit)
+[gateway] ausgehend auf Port 3128, nur zu meinefirma.weclapp.com:443
+[gateway] eingehend auf Port 3000, weiter an weclapp-mcp:3000
+```
+
+Von außen erreichbar ist nur `127.0.0.1:8734` am Gateway. Der Server selbst hat keinen veröffentlichten Port.
 
 Warnungen wie `Your kernel does not support … limit` bei rootless Docker heißen: CPU- oder Speicherlimit greifen nicht. Der Server läuft trotzdem. Sag dem Hoster Bescheid, wenn ihm die Limits wichtig sind.
 
@@ -195,6 +210,14 @@ printf 'weclapp-Token: ' && read -rs WECLAPP_TOKEN && echo && curl -s -H "Author
 
 Erwartet: eine Zeile `data: {"result":{…"serverInfo":{"name":"weclapp-mcp",…}}}`.
 
+**Abschottung prüfen** (per SSH auf dem Server). Der Befehl startet im Server-Container ein kurzes Node-Skript. Es ruft weclapp über den Gateway ab und versucht dann, andere Ziele zu erreichen:
+
+```bash
+cd ~/weclapp-mcp && docker compose exec -e T="$(grep '^WECLAPP_TENANT=' .env | cut -d= -f2).weclapp.com" weclapp-mcp /nodejs/bin/node -e "const n=require('net');const t=(h,p)=>new Promise(r=>{const s=n.connect({host:h,port:p,timeout:3000});s.on('connect',()=>{s.destroy();r('ERREICHBAR')});s.on('timeout',()=>{s.destroy();r('gesperrt (timeout)')});s.on('error',e=>r('gesperrt ('+e.code+')'))});const f=u=>fetch(u,{signal:AbortSignal.timeout(8000)}).then(x=>'HTTP '+x.status,()=>'gesperrt');(async()=>{console.log('weclapp:',await f('https://'+process.env.T+'/webapp/api/v2/user/currentUser'));console.log('example.com:',await f('https://example.com/'));console.log('1.1.1.1:443:',await t('1.1.1.1',443));console.log('docker0 172.17.0.1:22:',await t('172.17.0.1',22))})()"
+```
+
+Erwartet: `weclapp: HTTP 401` (weclapp antwortet, ohne Token eben mit 401), alle anderen Zeilen `gesperrt (…)`. Steht irgendwo `ERREICHBAR` oder `HTTP 200` bei example.com, ist die Abschottung auf diesem Server nicht wirksam: Container stoppen und den Fall melden.
+
 ## 7. Clients verbinden
 
 Auf jedem Gerät brauchst du die URL `https://mcp.example.com/mcp` und deinen weclapp-Token. Die Konfiguration für Claude Code, Claude Desktop (über `mcp-remote`) und Cursor steht in der [README](README.md#clients-verbinden). Ersetze dort nur die URL.
@@ -204,8 +227,19 @@ Auf jedem Gerät brauchst du die URL `https://mcp.example.com/mcp` und deinen we
 **Updates einspielen:**
 
 ```bash
-cd ~/weclapp-mcp && git pull && docker compose build --pull && docker compose up -d
+cd ~/weclapp-mcp && git pull && docker compose up -d --build
 ```
+
+Die Basis-Images sind im Dockerfile und in `docker-compose.yml` per Digest festgelegt. `--pull` ist deshalb nicht nötig: Gebaut wird genau das Image, das im PR geprüft wurde.
+
+**Wie Updates entstehen und auf den Server kommen:**
+
+- **Dependabot** (`.github/dependabot.yml`) öffnet montags PRs für npm-Pakete, neue Digests der Basis-Images (Build-Stufe `node:24-alpine`, Laufzeit distroless, Caddy) und GitHub Actions. npm-Pakete und Actions schlägt er frühestens sieben Tage nach ihrer Veröffentlichung vor: Kompromittierte Pakete fallen meist in den ersten Tagen auf. Neue Digests der Basis-Images kommen ohne Wartezeit, sie bringen die Sicherheitsupdates von Debian, Alpine und Node.
+- **Prüfen und mergen:** Jeder PR durchläuft den PR-Check (Tests, Typecheck, Docker-Build, Probelauf des Containers). Die Checks „Tests“ und „Docker“ sind Pflicht: Ohne beide grün lässt GitHub nicht in `main` mergen. Gemergt wird von Hand. Eine neue Node-Hauptversion schlägt Dependabot nicht vor; die wechselst du bewusst (das distroless-Image trägt sie im Namen, `nodejs24`).
+- **Ausrollen:** nach jedem gemergten Update-PR der Befehl oben. GitHub benachrichtigt dich über neue Dependabot-PRs, das ist zugleich die Erinnerung. Richtwert: Updates der Basis-Images innerhalb einer Woche einspielen.
+- **Nicht eingerichtet, mögliche nächste Stufe**, je nachdem, was der Hoster erlaubt (Schritt 0):
+  - **Automatisch auf dem Server:** ein Cron-Job oder systemd-Timer, der wöchentlich `git pull --ff-only && docker compose up -d --build` ausführt. Wenig Aufwand, aber ein Dauerauftrag auf dem Server, und jeder Stand von `main` läuft ohne weiteren Blick an.
+  - **Fertiges Image aus GitHub:** GitHub Actions baut das Image und legt es in die GitHub Container Registry (`ghcr.io`), der Server zieht es nur noch (`docker compose pull && docker compose up -d`). Spart den Build auf dem Server; dafür `image:` statt `build:` in den Compose-Dateien und ein Workflow mit Schreibrecht auf Pakete.
 
 **Logs ansehen** (Start- und Fehlermeldungen, nie der Token; Docker behält höchstens 3 × 1 MB):
 
@@ -213,10 +247,10 @@ cd ~/weclapp-mcp && git pull && docker compose build --pull && docker compose up
 cd ~/weclapp-mcp && docker compose logs --tail 50
 ```
 
-**Änderungsprotokoll ansehen:**
+**Änderungsprotokoll ansehen.** Das Image hat keine Shell, `docker compose exec … sh` geht deshalb nicht. `docker compose cp` kopiert die Dateien als tar-Archiv heraus:
 
 ```bash
-cd ~/weclapp-mcp && docker compose exec weclapp-mcp sh -c 'cat /data/audit/*.jsonl' | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
+cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit - | tar -xOf - | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
 ```
 
 **Nach einem Neustart des Servers** startet Docker den Container wieder (`restart: unless-stopped`). Bei rootless Docker gilt das nur, wenn der Docker-Dienst deines Nutzers ohne Anmeldung startet. Das klärt Frage 3 aus Schritt 0.
@@ -230,13 +264,13 @@ Das Protokoll liegt im Docker-Volume `weclapp-mcp_audit_data`. Sichere es **dire
 Auf deinem Rechner (`benutzer@server` durch deinen SSH-Zugang ersetzen):
 
 ```bash
-ssh benutzer@server 'cd ~/weclapp-mcp && docker compose exec -T weclapp-mcp tar -C /data -cf - audit' > weclapp-audit-$(date +%F).tar
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit -' > weclapp-audit-$(date +%F).tar
 ```
 
-Zurückspielen (der Dienst ist dabei kurz gestoppt):
+Zurückspielen (der Dienst ist dabei kurz gestoppt). Das Image hat kein `tar`, deshalb entpackt ein kurzlebiger `busybox`-Container ohne Netz als Laufzeitnutzer `65532` direkt ins Volume. `docker compose cp` in die Gegenrichtung taugt dafür nicht: Es setzt die Besitzer der Dateien auf root, und der Server kann danach nicht mehr schreiben.
 
 ```bash
-ssh benutzer@server 'cd ~/weclapp-mcp && docker compose stop weclapp-mcp && docker compose run --rm --no-deps -T weclapp-mcp tar -C /data -xf - && docker compose start weclapp-mcp' < weclapp-audit-JJJJ-MM-TT.tar
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose stop weclapp-mcp && docker run --rm -i --network none --user 65532:65532 -v weclapp-mcp_audit_data:/data busybox:1 tar -C /data -xf - && docker compose start weclapp-mcp' < weclapp-audit-JJJJ-MM-TT.tar
 ```
 
 Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. Bewahre sie trotzdem wie andere Geschäftsdaten auf.
@@ -245,19 +279,82 @@ Die Sicherung enthält Vorher-/Nachher-Stände aus weclapp, aber keine Tokens. B
 
 | Symptom | Ursache und Abhilfe |
 |---|---|
-| `502 Bad Gateway` | Der Container läuft nicht oder hört auf einem anderen Port. Auf dem Server: `docker compose ps`, dann `curl -s http://127.0.0.1:8734/health`. `MCP_PORT` muss dem Port im Panel entsprechen. |
+| `502 Bad Gateway` | Ein Container läuft nicht oder der Port stimmt nicht. Auf dem Server: `docker compose ps` (beide Container `healthy`?), dann `curl -s http://127.0.0.1:8734/health`. `MCP_PORT` muss dem Port im Panel entsprechen. |
 | `403` mit `Invalid Host` | Das NGINX schickt einen Host, der nicht erlaubt ist. Schritt 4 (Tabelle `host`). |
 | `403` mit `Invalid Origin` | Ein Browser oder Client schickt einen fremden `Origin`. Das ist der Schutz gegen DNS-Rebinding. Normale MCP-Clients schicken keinen `Origin`. |
 | `401` | Kein oder ungültiger Token. Den Token in weclapp prüfen bzw. neu anlegen. |
 | `429` | Zu viele Fehlversuche (Schritt 4, „Was `MCP_TRUST_PROXY=false` bedeutet“). Bis zu 5 Minuten warten. |
-| `503` | weclapp war nicht erreichbar. Sind ausgehende HTTPS-Verbindungen vom Server erlaubt (Schritt 0, Frage 4)? |
+| `503` | weclapp war nicht erreichbar. `docker compose logs gateway`: Steht dort `abgelehnt: CONNECT …`, passt `WECLAPP_TENANT` nicht zum Ziel. Steht dort `nicht erreichbar`, sind ausgehende HTTPS-Verbindungen vom Server gesperrt (Schritt 0, Frage 4). |
 | `413` | Request größer als 1 MB. NGINX und Server haben dieselbe Grenze. |
 | Antwort bricht nach etwa 60 s ab | Server und NGINX begrenzen einen Request auf rund 60 s. weclapp-Abfragen sind normalerweise viel schneller. |
 | `port is already allocated` | Ein anderer Prozess nutzt den Port, z. B. ein vergessener Header-Test: `docker stop weclapp-header-test`. |
 
+## 11. Umstellung einer bestehenden Installation auf distroless und Gateway
+
+Für Server, die vor diesem Umbau eingerichtet wurden: ein Container `weclapp-mcp` aus `node:24-alpine`, Port direkt am Server-Container. Danach laufen zwei Container (`weclapp-mcp`, `gateway`) in zwei Netzen, der Port hängt am Gateway. Für das Panel ändert sich nichts: Port, Domain und Zertifikat bleiben.
+
+Was sich ändert und warum ein Handgriff nötig ist: Der Server läuft jetzt als Nutzer `65532` statt `1000`. Das Änderungsprotokoll im Volume gehört aber noch `1000`. Ohne Umstellung startet der Server nicht (`EACCES … mkdir '/data/audit'`).
+
+Alle Schritte per SSH auf dem Server, im Ordner `~/weclapp-mcp`. Der Dienst ist zwischen Schritt 4 und 6 für etwa eine Minute nicht erreichbar.
+
+**1. Protokoll sichern** (auf deinem eigenen Rechner, wie in Schritt 9; funktioniert mit altem und neuem Image):
+
+```bash
+ssh benutzer@server 'cd ~/weclapp-mcp && docker compose cp weclapp-mcp:/data/audit -' > weclapp-audit-vor-umstellung.tar
+```
+
+**2. Stand merken**, damit du zurückkannst:
+
+```bash
+cd ~/weclapp-mcp && git rev-parse HEAD > ~/weclapp-mcp-vorher.txt
+```
+
+**3. Neuen Stand holen und bauen.** Der alte Container läuft dabei weiter:
+
+```bash
+cd ~/weclapp-mcp && git pull && docker compose build
+```
+
+**4. Alten Container entfernen.** Das Volume mit dem Protokoll bleibt (kein `-v`):
+
+```bash
+cd ~/weclapp-mcp && docker compose down
+```
+
+**5. Volume auf den neuen Nutzer umstellen.** Ein kurzlebiger `busybox`-Container ohne Netz ändert nur die Besitzer im Volume:
+
+```bash
+docker run --rm --network none -v weclapp-mcp_audit_data:/data busybox:1 chown -R 65532:65532 /data
+```
+
+**6. Starten:**
+
+```bash
+cd ~/weclapp-mcp && docker compose up -d
+```
+
+**7. Prüfen:** Schritt 5 (`docker compose ps`: beide Container `healthy`, die drei Logzeilen) und Schritt 6 von außen, einschließlich „Abschottung prüfen“. Mit `weclapp_list_changes` in einem Client siehst du, dass die alten Einträge noch da sind.
+
+**Zurück zum alten Stand**, falls etwas nicht läuft:
+
+```bash
+cd ~/weclapp-mcp && docker compose down && git checkout "$(cat ~/weclapp-mcp-vorher.txt)" && docker run --rm --network none -v weclapp-mcp_audit_data:/data busybox:1 chown -R 1000:1000 /data && docker compose up -d --build
+```
+
+`--build` ist dabei nötig: Ohne baut Compose das alte Image nicht neu und startet das neue, das mit dem zurückgestellten Volume nicht schreiben darf. Später wieder auf den aktuellen Stand: `git checkout main` und ab Schritt 3.
+
 ## Was getestet ist
 
-Lokal mit Docker getestet: `docker-compose.nginx.yml`, dahinter ein nachgebauter weclapp-Server, davor zwei NGINX. Der eine verhält sich wie ein Panel-Proxy mit NGINX-Standardeinstellungen (`Host: 127.0.0.1:<Port>`, kein `X-Forwarded-For`), der andere nutzt das Experten-Setup oben.
+**Stand 26.11.2026, distroless und Gateway.** Lokal mit Docker 29.3 (Docker Desktop, arm64), beide Compose-Varianten, dahinter der nachgebaute weclapp-Server:
+
+- NGINX mit Standardeinstellungen eines Panel-Proxys (`Host: 127.0.0.1:<Port>`, kein `X-Forwarded-For`) vor dem Gateway: `/health` mit `200`, `/mcp` ohne Token mit `401`, mit Token die Tool-Liste. Rate-Limit mit `false`: 10 × `401`, danach `429`, auch mit gefälschtem `X-Forwarded-For`.
+- Der Gateway reicht Header unverändert durch, `X-Forwarded-For` kommt beim Server so an, wie das NGINX es schickt (Test in `test/gateway.test.ts`). Die Bedeutung von `MCP_TRUST_PROXY` und die Tabellen aus Schritt 4 gelten deshalb weiter.
+- Container: `docker compose exec … sh` scheitert, Nutzer 65532, schreibgeschütztes Dateisystem außer `/data`, Permission Model, kein `/dev/shm`, Log auf 3 × 1 MB begrenzt. Das Protokoll entsteht mit `0600`.
+- Abschottung: Der Server-Container erreicht weder Dienste auf dem Host noch das Internet noch fremde Namen im DNS. Der Weg zum echten Mandanten über den Gateway funktioniert: ein ungültiger Token ergibt `401` von weclapp. Der Prüfbefehl aus Schritt 6 liefert das erwartete Ergebnis.
+- Umstellung aus Abschnitt 11, Schritt für Schritt mit einem Eintrag aus dem alten Image: Ohne `chown` startet der neue Server nicht, danach mit allen Einträgen; Schreiben geht. Der Rückweg mit `--build` startet wieder das alte Image als Nutzer 1000 mit allen Einträgen. Backup und Restore aus Schritt 9 mit den neuen Befehlen: Die Rechte (`0600`, Besitzer 65532) bleiben erhalten.
+- `scripts/container-check.sh` fasst diese Prüfungen zusammen und läuft bei jedem PR. Auf GitHub (ubuntu-24.04, amd64) lief er ohne Befund.
+
+**Stand 13.11.2026, vor dem Umbau** (ein Container, `node:24-alpine`). Zwei NGINX vor dem Server, einer wie ein Panel-Proxy, einer mit dem Experten-Setup oben:
 
 - In beiden Fällen: `/health` antwortet mit `200`, `/mcp` ohne Token mit `401`, mit fremdem `Origin` mit `403`. Mit Token liefert der Server die Tool-Liste. Bei 1,1 MB antwortet er mit `413`.
 - Rate-Limit mit `false`: 10 × `401`, danach `429`. Der bestätigte Token arbeitet weiter. Ein neuer Token von einer anderen gefälschten Adresse ist gesperrt, wie oben beschrieben.
@@ -265,6 +362,5 @@ Lokal mit Docker getestet: `docker-compose.nginx.yml`, dahinter ein nachgebauter
 - Experten-Setup mit `true`: Gefälschte Adressen helfen nicht, nach 10 Versuchen kommt `429`.
 - Der Header-Test aus Schritt 4 zeigt die drei typischen NGINX-Varianten (durchreichen, anhängen, überschreiben) so, wie die Tabelle sie beschreibt.
 - SSE-Ereignisse kamen auch durch einen NGINX mit Standard-Pufferung ohne Verzögerung an. Der Server sendet zusätzlich `X-Accel-Buffering: no`, damit NGINX auch bei strengerer Pufferung nichts zurückhält.
-- Container: schreibgeschütztes Dateisystem, keine Capabilities, Nutzer `node`, 1 CPU, 512 MB, 200 Prozesse, Log auf 3 × 1 MB begrenzt, Port nur auf `127.0.0.1`. Backup und Restore aus Schritt 9 funktionieren, die Dateirechte (`0600`) bleiben erhalten.
 
-Erst auf deinem Server prüfbar: was das Panel-NGINX tatsächlich schickt (Schritt 4), das Let's-Encrypt-Zertifikat, Docker ohne root (Limits, Neustart nach Reboot) und ausgehende Verbindungen zu weclapp.
+Erst auf deinem Server prüfbar: was das Panel-NGINX tatsächlich schickt (Schritt 4), das Let's-Encrypt-Zertifikat, Docker ohne root (Limits, Neustart nach Reboot), ob das interne Netz dort genauso abschottet (Prüfbefehl in Schritt 6) und ausgehende Verbindungen zu weclapp.

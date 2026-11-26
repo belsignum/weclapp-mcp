@@ -79,10 +79,10 @@ Schreib-Tools gibt es nur dort, wo protokolliert wird. Der Docker-Server schreib
 - **Aufbewahrung:** 365 Tage (`WECLAPP_AUDIT_RETENTION_DAYS`, `0` = unbegrenzt). Ältere Monatsdateien löscht der Server selbst.
 - **Größe:** höchstens 100 MB (`WECLAPP_AUDIT_MAX_MB`, `0` = unbegrenzt). Ist das Protokoll voll, lehnt der Server Schreibaktionen ab, bis alte Monatsdateien ablaufen oder der Wert erhöht wird. Bei normaler Nutzung wird diese Grenze nicht erreicht.
 - **Übersicht:** `weclapp_list_changes` lässt sehr große Vorher-/Nachher-Stände (über 32 kB) weg und weist darauf hin. Rückgängig machen lassen sie sich trotzdem.
-- **Auf dem VPS ansehen:**
+- **Auf dem VPS ansehen** (das Image hat keine Shell, deshalb kopiert `docker compose cp` die Dateien als tar-Archiv heraus):
 
 ```bash
-docker compose exec weclapp-mcp sh -c 'cat /data/audit/*.jsonl' | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
+docker compose cp weclapp-mcp:/data/audit - | tar -xOf - | jq -c 'select(.phase=="begin") | {time, user: .user.name, tool, entity, entityId}'
 ```
 
 Änderungen direkt in der weclapp-Oberfläche stehen nicht im Protokoll. Der lokale Start (stdio) ist ohne `WECLAPP_AUDIT_DIR` nur lesend, damit keine verteilten Protokolle auf mehreren Geräten entstehen.
@@ -95,7 +95,7 @@ Den Token behandelst du wie ein Passwort: Wer ihn hat, hat in weclapp deine Rech
 
 ## Betrieb auf einem VPS (Docker + Caddy)
 
-Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Container selbst ist von außen nicht erreichbar.
+Caddy holt automatisch ein TLS-Zertifikat von Let's Encrypt. Der weclapp-Container selbst ist von außen nicht erreichbar. Er hängt nur in einem internen Docker-Netz ohne Internet und ohne Zugriff auf den Server; nach draußen kommt er allein über einen kleinen Gateway-Container, der nur Verbindungen zum eigenen weclapp-Mandanten zulässt (siehe [SECURITY.md](SECURITY.md#abschottung-des-containers)).
 
 Läuft auf deinem Server schon ein NGINX, das TLS übernimmt und an einen lokalen Port weiterleitet (etwa die Option „Proxy auf App-Server/Port“ einer Hosting-Verwaltungsoberfläche), nimm stattdessen `docker-compose.nginx.yml`. Die Schritt-für-Schritt-Anleitung steht in [DEPLOY.md](DEPLOY.md).
 
@@ -246,6 +246,12 @@ WECLAPP_TENANT=meinefirma WECLAPP_AUDIT_DIR=./audit npm run dev   # HTTP-Server 
 ```
 
 Node.js ≥ 24. Der Quellcode in `src/` läuft dank Type-Stripping direkt mit Node; `npm run build` erzeugt `dist/` für Docker und `npx`.
+
+```bash
+scripts/container-check.sh   # Probelauf des Docker-Aufbaus: baut, startet, prüft Funktion und Abschottung, räumt ab
+```
+
+Jeder PR durchläuft den PR-Check (`.github/workflows/check.yml`): Typecheck, Tests, `npm audit` der Laufzeit-Abhängigkeiten, Gültigkeit beider Compose-Dateien und `scripts/container-check.sh`. Die Checks „Tests“ und „Docker“ sind Pflicht für `main`. Secret Scanning und Push Protection sind eingeschaltet: GitHub weist Pushes mit erkannten Zugangsdaten ab.
 
 ### Rauchtest am echten Mandanten
 

@@ -1,0 +1,53 @@
+# PR-Check: läuft für jeden PR ohne Pfadfilter, damit er als Pflicht-Check taugt.
+# Nur pull_request (nie pull_request_target): PRs aus Forks laufen ohne Secrets und ohne Schreibrechte.
+name: Check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: check-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - name: Bekannte Schwachstellen in Laufzeit-Abhängigkeiten
+        run: npm audit --omit=dev --audit-level=high
+
+  docker:
+    name: Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Compose-Dateien gültig
+        env:
+          WECLAPP_TENANT: check
+          MCP_DOMAIN: mcp.localhost
+          MCP_PORT: "18734"
+        run: |
+          docker compose -f docker-compose.yml config --quiet
+          docker compose -f docker-compose.nginx.yml config --quiet
+      - name: Probelauf mit Prüfung der Abschottung
+        run: scripts/container-check.sh
